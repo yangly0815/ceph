@@ -77,3 +77,7 @@
   librbd to load the plugin by adding the following to your configuration::
 
     rbd_plugins = parent_cache
+
+* OSD: A new configuration option ``osd_compact_on_start`` has been added which triggers
+  an OSD compaction on start. Setting this option to ``true`` and restarting an OSD
+  will result in a offline compaction of the OSD.
