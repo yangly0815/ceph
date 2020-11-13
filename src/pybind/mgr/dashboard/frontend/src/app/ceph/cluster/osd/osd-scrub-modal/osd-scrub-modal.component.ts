@@ -2,13 +2,12 @@ import { Component, OnInit } from '@angular/core';
 import { FormGroup } from '@angular/forms';
 
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
 import { forkJoin } from 'rxjs';
 
-import { OsdService } from '../../../../shared/api/osd.service';
-import { NotificationType } from '../../../../shared/enum/notification-type.enum';
-import { JoinPipe } from '../../../../shared/pipes/join.pipe';
-import { NotificationService } from '../../../../shared/services/notification.service';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { JoinPipe } from '~/app/shared/pipes/join.pipe';
+import { NotificationService } from '~/app/shared/services/notification.service';
 
 @Component({
   selector: 'cd-osd-scrub-modal',
@@ -24,7 +23,6 @@ export class OsdScrubModalComponent implements OnInit {
     public activeModal: NgbActiveModal,
     private osdService: OsdService,
     private notificationService: NotificationService,
-    private i18n: I18n,
     private joinPipe: JoinPipe
   ) {}
 
@@ -39,10 +37,9 @@ export class OsdScrubModalComponent implements OnInit {
 
         this.notificationService.show(
           NotificationType.success,
-          this.i18n('{{operation}} was initialized in the following OSD(s): {{id}}', {
-            operation: operation,
-            id: this.joinPipe.transform(this.selected)
-          })
+          $localize`${operation} was initialized in the following OSD(s): ${this.joinPipe.transform(
+            this.selected
+          )}`
         );
 
         this.activeModal.close();

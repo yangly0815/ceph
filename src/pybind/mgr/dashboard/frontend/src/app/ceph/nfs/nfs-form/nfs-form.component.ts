@@ -2,27 +2,24 @@ import { ChangeDetectorRef, Component, OnInit, ViewChild } from '@angular/core';
 import { FormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { forkJoin, Observable, of } from 'rxjs';
 import { debounceTime, distinctUntilChanged, map, mergeMap } from 'rxjs/operators';
 
-import { NfsService } from '../../../shared/api/nfs.service';
-import { RgwUserService } from '../../../shared/api/rgw-user.service';
-import { SelectMessages } from '../../../shared/components/select/select-messages.model';
-import { SelectOption } from '../../../shared/components/select/select-option.model';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdForm } from '../../../shared/forms/cd-form';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { Permission } from '../../../shared/models/permissions';
-import { CephReleaseNamePipe } from '../../../shared/pipes/ceph-release-name.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { NfsService } from '~/app/shared/api/nfs.service';
+import { RgwUserService } from '~/app/shared/api/rgw-user.service';
+import { SelectMessages } from '~/app/shared/components/select/select-messages.model';
+import { SelectOption } from '~/app/shared/components/select/select-option.model';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { Permission } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { NfsFormClientComponent } from '../nfs-form-client/nfs-form-client.component';
 
 @Component({
@@ -33,6 +30,8 @@ import { NfsFormClientComponent } from '../nfs-form-client/nfs-form-client.compo
 export class NfsFormComponent extends CdForm implements OnInit {
   @ViewChild('nfsClients', { static: true })
   nfsClients: NfsFormClientComponent;
+
+  clients: any[] = [];
 
   permission: Permission;
   nfsForm: CdFormGroup;
@@ -60,13 +59,9 @@ export class NfsFormComponent extends CdForm implements OnInit {
 
   action: string;
   resource: string;
-  docsUrl: string;
 
   daemonsSelections: SelectOption[] = [];
-  daemonsMessages = new SelectMessages(
-    { noOptions: this.i18n('There are no daemons available.') },
-    this.i18n
-  );
+  daemonsMessages = new SelectMessages({ noOptions: $localize`There are no daemons available.` });
 
   pathDataSource = (text$: Observable<string>) => {
     return text$.pipe(
@@ -92,16 +87,13 @@ export class NfsFormComponent extends CdForm implements OnInit {
     private router: Router,
     private rgwUserService: RgwUserService,
     private formBuilder: CdFormBuilder,
-    private summaryservice: SummaryService,
-    private cephReleaseNamePipe: CephReleaseNamePipe,
     private taskWrapper: TaskWrapperService,
     private cdRef: ChangeDetectorRef,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
     this.permission = this.authStorageService.getPermissions().pool;
-    this.resource = this.i18n('NFS export');
+    this.resource = $localize`NFS export`;
     this.createForm();
   }
 
@@ -126,21 +118,17 @@ export class NfsFormComponent extends CdForm implements OnInit {
 
         this.getData(promises);
       });
+      this.nfsForm.get('cluster_id').disable();
     } else {
       this.action = this.actionLabels.CREATE;
       this.getData(promises);
     }
-
-    this.summaryservice.subscribeOnce((summary) => {
-      const releaseName = this.cephReleaseNamePipe.transform(summary.version);
-      this.docsUrl = `http://docs.ceph.com/docs/${releaseName}/radosgw/nfs/`;
-    });
   }
 
   getData(promises: Observable<any>[]) {
     forkJoin(promises).subscribe((data: any[]) => {
       this.resolveDaemons(data[0]);
-      this.resolvefsals(data[1]);
+      this.resolveFsals(data[1]);
       this.resolveClients(data[2]);
       this.resolveFilesystems(data[3]);
       if (data[4]) {
@@ -266,7 +254,7 @@ export class NfsFormComponent extends CdForm implements OnInit {
 
     this.nfsForm.patchValue(res);
     this.setPathValidation();
-    this.nfsClients.resolveModel(res.clients);
+    this.clients = res.clients;
   }
 
   resolveDaemons(daemons: Record<string, any>) {
@@ -295,7 +283,7 @@ export class NfsFormComponent extends CdForm implements OnInit {
     }
   }
 
-  resolvefsals(res: string[]) {
+  resolveFsals(res: string[]) {
     res.forEach((fsal) => {
       const fsalItem = this.nfsService.nfsFsal.find((currentFsalItem) => {
         return fsal === currentFsalItem.value;
@@ -397,7 +385,8 @@ export class NfsFormComponent extends CdForm implements OnInit {
       return of([]);
     }
 
-    return this.nfsService.lsDir(path);
+    const fsName = this.nfsForm.getValue('fsal').fs_name;
+    return this.nfsService.lsDir(fsName, path);
   }
 
   pathChangeHandler() {

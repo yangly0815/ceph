@@ -12,15 +12,14 @@ set_target_properties(crimson::cflags PROPERTIES
   INTERFACE_LINK_LIBRARIES Seastar::seastar)
 
 set(crimson_common_srcs
-  admin/admin_socket.cc
-  admin/osd_admin.cc
   common/assert.cc
   common/buffer_io.cc
   common/config_proxy.cc
   common/formatter.cc
   common/perf_counters_collection.cc
   common/log.cc
-  common/throttle.cc)
+  common/throttle.cc
+  common/tri_mutex.cc)
 
 # the specialized version of ceph-common, where
 #  - the logging is sent to Seastar backend
@@ -100,6 +99,7 @@ add_library(crimson-common STATIC
   ${PROJECT_SOURCE_DIR}/src/mgr/ServiceMap.cc
   ${PROJECT_SOURCE_DIR}/src/mds/inode_backtrace.cc
   ${PROJECT_SOURCE_DIR}/src/mds/mdstypes.cc
+  ${PROJECT_SOURCE_DIR}/src/mds/cephfs_features.cc
   ${PROJECT_SOURCE_DIR}/src/mds/FSMap.cc
   ${PROJECT_SOURCE_DIR}/src/mds/FSMapUser.cc
   ${PROJECT_SOURCE_DIR}/src/mds/MDSMap.cc
@@ -159,6 +159,7 @@ set(crimson_mon_srcs
   mon/MonClient.cc
   ${PROJECT_SOURCE_DIR}/src/mon/MonSub.cc)
 set(crimson_net_srcs
+  ${PROJECT_SOURCE_DIR}/src/msg/async/crypto_onwire.cc
   ${PROJECT_SOURCE_DIR}/src/msg/async/frames_v2.cc
   net/Errors.cc
   net/Messenger.cc
@@ -180,5 +181,6 @@ target_link_libraries(crimson
   PUBLIC
     crimson-common
     crimson::cflags)
+add_subdirectory(admin)
 add_subdirectory(os)
 add_subdirectory(osd)

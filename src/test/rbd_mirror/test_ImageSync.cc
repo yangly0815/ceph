@@ -36,7 +36,7 @@ int flush(librbd::ImageCtx *image_ctx) {
   C_SaferCond ctx;
   auto aio_comp = librbd::io::AioCompletion::create_and_start(
     &ctx, image_ctx, librbd::io::AIO_TYPE_FLUSH);
-  auto req = librbd::io::ImageDispatchSpec<>::create_flush(
+  auto req = librbd::io::ImageDispatchSpec::create_flush(
     *image_ctx, librbd::io::IMAGE_DISPATCH_LAYER_INTERNAL_START, aio_comp,
     librbd::io::FLUSH_SOURCE_INTERNAL, {});
   req->send();
@@ -80,7 +80,7 @@ public:
         cct, "rbd_mirror_concurrent_image_syncs");
 
     m_instance_watcher = rbd::mirror::InstanceWatcher<>::create(
-        m_local_io_ctx, m_threads->work_queue, nullptr, m_image_sync_throttler);
+      m_local_io_ctx, *m_threads->asio_engine, nullptr, m_image_sync_throttler);
     m_instance_watcher->handle_acquire_leader();
 
     ContextWQ* context_wq;

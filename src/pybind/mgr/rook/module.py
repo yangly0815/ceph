@@ -126,7 +126,7 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
             return False, "ceph-mgr not running in Rook cluster"
 
         try:
-            self.k8s.list_namespaced_pod(self._rook_env.cluster_name)
+            self.k8s.list_namespaced_pod(self._rook_env.namespace)
         except ApiException as e:
             return False, "Cannot reach Kubernetes API: {}".format(e)
         else:
@@ -169,12 +169,9 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
 
         if self._rook_env.has_namespace():
             config.load_incluster_config()
-            cluster_name = self._rook_env.cluster_name
         else:
             self.log.warning("DEVELOPMENT ONLY: Reading kube config from ~")
             config.load_kube_config()
-
-            cluster_name = "rook-ceph"
 
             # So that I can do port forwarding from my workstation - jcsp
             from kubernetes.client import configuration
@@ -188,7 +185,7 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
             # this context, or subsequent API usage from handle_command
             # fails with SSLError('bad handshake').  Suspect some kind of
             # thread context setup in SSL lib?
-            self._k8s_CoreV1_api.list_namespaced_pod(cluster_name)
+            self._k8s_CoreV1_api.list_namespaced_pod(self._rook_env.namespace)
         except ApiException:
             # Ignore here to make self.available() fail with a proper error message
             pass
@@ -363,7 +360,11 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
     @deferred_read
     def list_daemons(self, service_name=None, daemon_type=None, daemon_id=None, host=None,
                      refresh=False):
-        return self._list_daemons(daemon_type, daemon_id, host, refresh)
+        return self._list_daemons(service_name=service_name,
+                                  daemon_type=daemon_type,
+                                  daemon_id=daemon_id,
+                                  host=host,
+                                  refresh=refresh)
 
     def _list_daemons(self, service_name=None, daemon_type=None, daemon_id=None, host=None,
                       refresh=False):
@@ -412,11 +413,6 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
             mgr=self
         )
 
-    def add_nfs(self, spec):
-        # type: (NFSServiceSpec) -> RookCompletion
-        return self._service_add_decorate("NFS", spec,
-                                          self.rook_cluster.add_nfsgw)
-
     def _service_rm_decorate(self, typename, name, func):
         return write_completion(
             on_complete=lambda : func(name),
@@ -462,12 +458,8 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
 
     def apply_nfs(self, spec):
         # type: (NFSServiceSpec) -> RookCompletion
-        num = spec.placement.count
-        return write_completion(
-            lambda: self.rook_cluster.update_nfs_count(spec.service_id, num),
-            "Updating NFS server count in {0} to {1}".format(spec.service_id, num),
-            mgr=self
-        )
+        return self._service_add_decorate("NFS", spec,
+                                          self.rook_cluster.apply_nfsgw)
 
     def remove_daemons(self, names):
         return write_completion(
@@ -493,8 +485,7 @@ class RookOrchestrator(MgrModule, orchestrator.Orchestrator):
 
         def execute(all_hosts_):
             # type: (List[orchestrator.HostSpec]) -> orchestrator.Completion
-            all_hosts = [h.hostname for h in all_hosts_]
-            matching_hosts = drive_group.placement.filter_matching_hosts(lambda label=None, as_hostspec=None: all_hosts)
+            matching_hosts = drive_group.placement.filter_matching_hosts(lambda label=None, as_hostspec=None: all_hosts_)
 
             assert len(matching_hosts) == 1
 

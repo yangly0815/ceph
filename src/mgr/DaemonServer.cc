@@ -111,8 +111,7 @@ int DaemonServer::init(uint64_t gid, entity_addrvec_t client_addrs)
   msgr = Messenger::create(g_ceph_context, public_msgr_type,
 			   entity_name_t::MGR(gid),
 			   "mgr",
-			   Messenger::get_pid_nonce(),
-			   0);
+			   Messenger::get_pid_nonce());
   msgr->set_default_policy(Messenger::Policy::stateless_server(0));
 
   msgr->set_auth_client(monc);
@@ -548,12 +547,16 @@ bool DaemonServer::handle_close(const ref_t<MMgrClose>& m)
   return true;
 }
 
-void DaemonServer::update_task_status(DaemonKey key, const ref_t<MMgrReport>& m) {
+void DaemonServer::update_task_status(
+  DaemonKey key,
+  const std::map<std::string,std::string>& task_status)
+{
   dout(10) << "got task status from " << key << dendl;
 
-  auto p = pending_service_map.get_daemon(key.type, key.name);
-  if (!map_compare(p.first->task_status, *m->task_status)) {
-    p.first->task_status = *m->task_status;
+  [[maybe_unused]] auto [daemon, added] =
+    pending_service_map.get_daemon(key.type, key.name);
+  if (daemon->task_status != task_status) {
+    daemon->task_status = task_status;
     pending_service_map_dirty = pending_service_map.epoch;
   }
 }
@@ -652,7 +655,7 @@ bool DaemonServer::handle_report(const ref_t<MMgrReport>& m)
       }
       // update task status
       if (m->task_status) {
-        update_task_status(key, m);
+        update_task_status(key, *m->task_status);
         daemon->last_service_beacon = now;
       }
       if (m->get_connection()->peer_is_osd() || m->get_connection()->peer_is_mon()) {
@@ -2805,12 +2808,13 @@ void DaemonServer::got_service_map()
 	// we just started up
 	dout(10) << "got initial map e" << service_map.epoch << dendl;
 	pending_service_map = service_map;
+	pending_service_map.epoch = service_map.epoch + 1;
       } else {
 	// we we already active and therefore must have persisted it,
 	// which means ours is the same or newer.
 	dout(10) << "got updated map e" << service_map.epoch << dendl;
+	ceph_assert(pending_service_map.epoch > service_map.epoch);
       }
-      pending_service_map.epoch = service_map.epoch + 1;
     });
 
   // cull missing daemons, populate new ones
@@ -2933,9 +2937,24 @@ int DaemonServer::remove_osd_perf_query(MetricQueryID query_id)
   return osd_perf_metric_collector.remove_query(query_id);
 }
 
-int DaemonServer::get_osd_perf_counters(
-    MetricQueryID query_id,
-    std::map<OSDPerfMetricKey, PerformanceCounters> *counters)
+int DaemonServer::get_osd_perf_counters(OSDPerfCollector *collector)
 {
-  return osd_perf_metric_collector.get_counters(query_id, counters);
+  return osd_perf_metric_collector.get_counters(collector);
+}
+
+MetricQueryID DaemonServer::add_mds_perf_query(
+    const MDSPerfMetricQuery &query,
+    const std::optional<MDSPerfMetricLimit> &limit)
+{
+  return mds_perf_metric_collector.add_query(query, limit);
+}
+
+int DaemonServer::remove_mds_perf_query(MetricQueryID query_id)
+{
+  return mds_perf_metric_collector.remove_query(query_id);
+}
+
+int DaemonServer::get_mds_perf_counters(MDSPerfCollector *collector)
+{
+  return mds_perf_metric_collector.get_counters(collector);
 }

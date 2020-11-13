@@ -4,26 +4,22 @@ import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
 import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import {
-  configureTestBed,
-  expectItemTasks,
-  i18nProviders
-} from '../../../../testing/unit-test-helper';
-import { ConfigurationService } from '../../../shared/api/configuration.service';
-import { PoolService } from '../../../shared/api/pool.service';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ExecutingTask } from '../../../shared/models/executing-task';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
-import { SharedModule } from '../../../shared/shared.module';
-import { RbdConfigurationListComponent } from '../../block/rbd-configuration-list/rbd-configuration-list.component';
-import { PgCategoryService } from '../../shared/pg-category.service';
+import { RbdConfigurationListComponent } from '~/app/ceph/block/rbd-configuration-list/rbd-configuration-list.component';
+import { PgCategoryService } from '~/app/ceph/shared/pg-category.service';
+import { ConfigurationService } from '~/app/shared/api/configuration.service';
+import { PoolService } from '~/app/shared/api/pool.service';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, expectItemTasks, Mocks } from '~/testing/unit-test-helper';
 import { Pool } from '../pool';
 import { PoolDetailsComponent } from '../pool-details/pool-details.component';
 import { PoolListComponent } from './pool-list.component';
@@ -33,18 +29,8 @@ describe('PoolListComponent', () => {
   let fixture: ComponentFixture<PoolListComponent>;
   let poolService: PoolService;
 
-  const createPool = (name: string, id: number): Pool => {
-    return _.merge(new Pool(name), {
-      pool: id,
-      pg_num: 256,
-      pg_placement_num: 256,
-      pg_num_target: 256,
-      pg_placement_num_target: 256
-    });
-  };
-
   const getPoolList = (): Pool[] => {
-    return [createPool('a', 0), createPool('b', 1), createPool('c', 2)];
+    return [Mocks.getPool('a', 0), Mocks.getPool('b', 1), Mocks.getPool('c', 2)];
   };
 
   configureTestBed({
@@ -57,7 +43,7 @@ describe('PoolListComponent', () => {
       NgbNavModule,
       HttpClientTestingModule
     ],
-    providers: [i18nProviders, PgCategoryService]
+    providers: [PgCategoryService]
   });
 
   beforeEach(() => {
@@ -145,13 +131,15 @@ describe('PoolListComponent', () => {
 
   describe('pool deletion', () => {
     let taskWrapper: TaskWrapperService;
+    let modalRef: any;
 
     const setSelectedPool = (poolName: string) =>
       (component.selection.selected = [{ pool_name: poolName }]);
 
     const callDeletion = () => {
       component.deletePoolModal();
-      const deletion: CriticalConfirmationModalComponent = component.modalRef.componentInstance;
+      expect(modalRef).toBeTruthy();
+      const deletion: CriticalConfirmationModalComponent = modalRef && modalRef.componentInstance;
       deletion.submitActionObservable();
     };
 
@@ -172,9 +160,10 @@ describe('PoolListComponent', () => {
 
     beforeEach(() => {
       spyOn(TestBed.inject(ModalService), 'show').and.callFake((deletionClass, initialState) => {
-        return {
+        modalRef = {
           componentInstance: Object.assign(new deletionClass(), initialState)
         };
+        return modalRef;
       });
       spyOn(poolService, 'delete').and.stub();
       taskWrapper = TestBed.inject(TaskWrapperService);
@@ -303,12 +292,14 @@ describe('PoolListComponent', () => {
 
     const getPoolData = (o: object) => [
       _.merge(
-        _.merge(createPool('a', 0), {
+        _.merge(Mocks.getPool('a', 0), {
           cdIsBinary: true,
           pg_status: '',
           stats: {
             bytes_used: { latest: 0, rate: 0, rates: [] },
             max_avail: { latest: 0, rate: 0, rates: [] },
+            avail_raw: { latest: 0, rate: 0, rates: [] },
+            percent_used: { latest: 0, rate: 0, rates: [] },
             rd: { latest: 0, rate: 0, rates: [] },
             rd_bytes: { latest: 0, rate: 0, rates: [] },
             wr: { latest: 0, rate: 0, rates: [] },
@@ -321,14 +312,15 @@ describe('PoolListComponent', () => {
     ];
 
     beforeEach(() => {
-      pool = createPool('a', 0);
+      pool = Mocks.getPool('a', 0);
     });
 
     it('transforms pools data correctly', () => {
       pool = _.merge(pool, {
         stats: {
           bytes_used: { latest: 5, rate: 0, rates: [] },
-          max_avail: { latest: 15, rate: 0, rates: [] },
+          avail_raw: { latest: 15, rate: 0, rates: [] },
+          percent_used: { latest: 0.25, rate: 0, rates: [] },
           rd_bytes: {
             latest: 6,
             rate: 4,
@@ -345,7 +337,8 @@ describe('PoolListComponent', () => {
           pg_status: '8 active+clean, 2 down',
           stats: {
             bytes_used: { latest: 5, rate: 0, rates: [] },
-            max_avail: { latest: 15, rate: 0, rates: [] },
+            avail_raw: { latest: 15, rate: 0, rates: [] },
+            percent_used: { latest: 0.25, rate: 0, rates: [] },
             rd_bytes: { latest: 6, rate: 4, rates: [2, 6] }
           },
           usage: 0.25
@@ -451,7 +444,7 @@ describe('PoolListComponent', () => {
 
     it('should select correct existing cache tier', () => {
       setSelectionTiers([0]);
-      expect(component.cacheTiers).toEqual([createPool('a', 0)]);
+      expect(component.cacheTiers).toEqual([Mocks.getPool('a', 0)]);
     });
 
     it('should not select cache tier if id is invalid', () => {
@@ -468,13 +461,17 @@ describe('PoolListComponent', () => {
       setSelectionTiers([0, 1, 2]);
       expect(component.cacheTiers).toEqual(getPoolList());
       setSelectionTiers([0]);
-      expect(component.cacheTiers).toEqual([createPool('a', 0)]);
+      expect(component.cacheTiers).toEqual([Mocks.getPool('a', 0)]);
       setSelectionTiers([]);
       expect(component.cacheTiers).toEqual([]);
     });
   });
 
   describe('getDisableDesc', () => {
+    beforeEach(() => {
+      component.selection.selected = [{ pool_name: 'foo' }];
+    });
+
     it('should return message if mon_allow_pool_delete flag is set to false', () => {
       component.monAllowPoolDelete = false;
       expect(component.getDisableDesc()).toBe(
@@ -482,9 +479,9 @@ describe('PoolListComponent', () => {
       );
     });
 
-    it('should return undefined if mon_allow_pool_delete flag is set to true', () => {
+    it('should return false if mon_allow_pool_delete flag is set to true', () => {
       component.monAllowPoolDelete = true;
-      expect(component.getDisableDesc()).toBeUndefined();
+      expect(component.getDisableDesc()).toBeFalsy();
     });
   });
 });

@@ -3,28 +3,28 @@ import { Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
 import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
+import moment from 'moment';
 import { forkJoin as observableForkJoin } from 'rxjs';
 
-import { AuthService } from '../../../shared/api/auth.service';
-import { RoleService } from '../../../shared/api/role.service';
-import { SettingsService } from '../../../shared/api/settings.service';
-import { UserService } from '../../../shared/api/user.service';
-import { ConfirmationModalComponent } from '../../../shared/components/confirmation-modal/confirmation-modal.component';
-import { SelectMessages } from '../../../shared/components/select/select-messages.model';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdForm } from '../../../shared/forms/cd-form';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { CdPwdExpirationSettings } from '../../../shared/models/cd-pwd-expiration-settings';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { PasswordPolicyService } from '../../../shared/services/password-policy.service';
+import { AuthService } from '~/app/shared/api/auth.service';
+import { RoleService } from '~/app/shared/api/role.service';
+import { SettingsService } from '~/app/shared/api/settings.service';
+import { UserService } from '~/app/shared/api/user.service';
+import { ConfirmationModalComponent } from '~/app/shared/components/confirmation-modal/confirmation-modal.component';
+import { SelectMessages } from '~/app/shared/components/select/select-messages.model';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { CdPwdExpirationSettings } from '~/app/shared/models/cd-pwd-expiration-settings';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { PasswordPolicyService } from '~/app/shared/services/password-policy.service';
 import { UserFormMode } from './user-form-mode.enum';
 import { UserFormRoleModel } from './user-form-role.model';
 import { UserFormModel } from './user-form.model';
@@ -46,19 +46,15 @@ export class UserFormComponent extends CdForm implements OnInit {
   userFormMode = UserFormMode;
   mode: UserFormMode;
   allRoles: Array<UserFormRoleModel>;
-  messages = new SelectMessages({ empty: this.i18n('There are no roles.') }, this.i18n);
+  messages = new SelectMessages({ empty: $localize`There are no roles.` });
   action: string;
   resource: string;
   passwordPolicyHelpText = '';
   passwordStrengthLevelClass: string;
   passwordValuation: string;
   icons = Icons;
-  minDate: Date;
-  bsConfig = {
-    dateInputFormat: 'YYYY-MM-DD',
-    containerClass: 'theme-default'
-  };
   pwdExpirationSettings: CdPwdExpirationSettings;
+  pwdExpirationFormat = 'YYYY-MM-DD';
 
   constructor(
     private authService: AuthService,
@@ -69,16 +65,15 @@ export class UserFormComponent extends CdForm implements OnInit {
     private roleService: RoleService,
     private userService: UserService,
     private notificationService: NotificationService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n,
     private passwordPolicyService: PasswordPolicyService,
     private formBuilder: CdFormBuilder,
     private settingsService: SettingsService
   ) {
     super();
-    this.resource = this.i18n('user');
+    this.resource = $localize`user`;
     this.createForm();
-    this.messages = new SelectMessages({ empty: this.i18n('There are no roles.') }, this.i18n);
+    this.messages = new SelectMessages({ empty: $localize`There are no roles.` });
   }
 
   createForm() {
@@ -110,7 +105,7 @@ export class UserFormComponent extends CdForm implements OnInit {
           ]
         ],
         confirmpassword: [''],
-        pwdExpirationDate: [''],
+        pwdExpirationDate: [undefined],
         email: ['', [CdValidators.email]],
         roles: [[]],
         enabled: [true, [Validators.required]],
@@ -129,7 +124,6 @@ export class UserFormComponent extends CdForm implements OnInit {
     } else {
       this.action = this.actionLabels.CREATE;
     }
-    this.minDate = new Date();
 
     const observables = [this.roleService.list(), this.settingsService.getStandardSettings()];
     observableForkJoin(observables).subscribe(
@@ -145,11 +139,9 @@ export class UserFormComponent extends CdForm implements OnInit {
         } else {
           if (this.pwdExpirationSettings.pwdExpirationSpan > 0) {
             const pwdExpirationDateField = this.userForm.get('pwdExpirationDate');
-            const expirationDate = new Date();
-            expirationDate.setDate(
-              this.minDate.getDate() + this.pwdExpirationSettings.pwdExpirationSpan
-            );
-            pwdExpirationDateField.setValue(expirationDate);
+            const expirationDate = moment();
+            expirationDate.add(this.pwdExpirationSettings.pwdExpirationSpan, 'day');
+            pwdExpirationDateField.setValue(expirationDate.format(this.pwdExpirationFormat));
             pwdExpirationDateField.setValidators([Validators.required]);
           }
 
@@ -182,7 +174,9 @@ export class UserFormComponent extends CdForm implements OnInit {
     );
     const expirationDate = response['pwdExpirationDate'];
     if (expirationDate) {
-      this.userForm.get('pwdExpirationDate').setValue(new Date(expirationDate * 1000));
+      this.userForm
+        .get('pwdExpirationDate')
+        .setValue(moment(expirationDate * 1000).format(this.pwdExpirationFormat));
     }
   }
 
@@ -193,13 +187,14 @@ export class UserFormComponent extends CdForm implements OnInit {
     );
     const expirationDate = this.userForm.get('pwdExpirationDate').value;
     if (expirationDate) {
+      const mom = moment(expirationDate, this.pwdExpirationFormat);
       if (
         this.mode !== this.userFormMode.editing ||
-        this.response.pwdExpirationDate !== Number(expirationDate) / 1000
+        this.response.pwdExpirationDate !== mom.unix()
       ) {
-        expirationDate.setHours(23, 59, 59);
+        mom.set({ hour: 23, minute: 59, second: 59 });
       }
-      userFormModel['pwdExpirationDate'] = Number(expirationDate) / 1000;
+      userFormModel['pwdExpirationDate'] = mom.unix();
     }
     return userFormModel;
   }
@@ -210,7 +205,7 @@ export class UserFormComponent extends CdForm implements OnInit {
       () => {
         this.notificationService.show(
           NotificationType.success,
-          this.i18n(`Created user '{{username}}'`, { username: userFormModel.username })
+          $localize`Created user '${userFormModel.username}'`
         );
         this.router.navigate(['/user-management/users']);
       },
@@ -223,8 +218,8 @@ export class UserFormComponent extends CdForm implements OnInit {
   editAction() {
     if (this.isUserRemovingNeededRolePermissions()) {
       const initialState = {
-        titleText: this.i18n('Update user'),
-        buttonText: this.i18n('Continue'),
+        titleText: $localize`Update user`,
+        buttonText: $localize`Continue`,
         bodyTpl: this.removeSelfUserReadUpdatePermissionTpl,
         onSubmit: () => {
           this.modalRef.close();
@@ -279,13 +274,13 @@ export class UserFormComponent extends CdForm implements OnInit {
           this.authService.logout(() => {
             this.notificationService.show(
               NotificationType.info,
-              this.i18n('You were automatically logged out because your roles have been changed.')
+              $localize`You were automatically logged out because your roles have been changed.`
             );
           });
         } else {
           this.notificationService.show(
             NotificationType.success,
-            this.i18n(`Updated user '{{username}}'`, { username: userFormModel.username })
+            $localize`Updated user '${userFormModel.username}'`
           );
           this.router.navigate(['/user-management/users']);
         }

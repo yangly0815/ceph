@@ -80,8 +80,7 @@ public:
   {
     int ret;
 
-    if (cct->_conf->log_early &&
-	!cct->_log->is_started()) {
+    if (!cct->_log->is_started()) {
       cct->_log->start();
     }
 
@@ -363,7 +362,7 @@ extern "C" void ceph_userperm_destroy(UserPerm *perm)
 extern "C" const char *ceph_version(int *pmajor, int *pminor, int *ppatch)
 {
   int major, minor, patch;
-  const char *v = ceph_version_to_str();
+  const char *v = ceph_version_to_str(nullptr);
 
   int n = sscanf(v, "%d.%d.%d", &major, &minor, &patch);
   if (pmajor)

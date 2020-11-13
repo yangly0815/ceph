@@ -29,6 +29,80 @@
 #include "crimson/os/cyanstore/cyan_collection.h"
 #endif
 
+/** @name PG Log
+ *
+ * The pg log serves three primary purposes:
+ *
+ * 1) improving recovery speed
+ *
+ * 2) detecting duplicate ops
+ *
+ * 3) making erasure coded updates safe
+ *
+ * For (1), the main data type is pg_log_entry_t.  this is indexed in
+ * memory by the IndexedLog class - this is where most of the logic
+ * surrounding pg log is kept, even though the low level types are in
+ * src/osd/osd_types.h
+ *
+ * (2) uses a type which is a subset of the full log entry, containing
+ * just the pieces we need to identify and respond to a duplicate
+ * request.
+ *
+ * As we trim the log, we convert pg_log_entry_t to smaller
+ * pg_log_dup_t, and finally remove them once we reach a higher
+ * limit. This is controlled by a few options:
+ *
+ * osd_min_pg_log_entries osd_max_pg_log_entries
+ * osd_pg_log_dups_tracked
+ *
+ * For example, with a min of 100, max of 1000, and dups tracked of
+ * 3000, the log entries and dups stored would span the following
+ * versions, assuming the current earliest is version 1:
+ *
+ *   version: 3000 2001 2000 1 [ pg log entries ] [ pg log dups ]
+ *
+ * after osd_pg_log_trim_min subsequent writes to this PG, the log
+ * would be trimmed to look like:
+ *
+ *   version: 3100 2101 2100 101 [ pg log entries ] [ pg log dups ]
+ *
+ * (3) means tracking the previous state of an object, so that we can
+ * rollback to that prior state if necessary. It's only used for
+ * erasure coding. Consider an erasure code of 4+2, for example.
+ *
+ * This means we split the object into 4 pieces (called shards) and
+ * compute 2 parity shards. Each of these shards is stored on a
+ * separate OSD. As long as 4 shards are the same version, we can
+ * recover the remaining 2 by computation. Imagine during a write, 3
+ * of the osds go down and restart, resulting in shards 0,1,2
+ * reflecting version A and shards 3,4,5 reflecting version B, after
+ * the write.
+ *
+ * If we had no way to reconstruct version A for another shard, we
+ * would have lost the object.
+ *
+ * The actual data for rollback is stored in a look-aside object and
+ * is removed once the EC write commits on all shards. The pg log just
+ * stores the versions so we can tell how far we can rollback, and a
+ * description of the type of operation for each log entry.  Beyond
+ * the pg log, see PGBackend::Trimmer and PGBackend::RollbackVisitor
+ * for more details on this.
+ *
+ * An important implication of this is that although the pg log length
+ * is normally bounded, under extreme conditions, with many EC I/Os
+ * outstanding, the log may grow beyond that point because we need to
+ * keep the rollback information for all outstanding EC I/O.
+ *
+ * For more on pg log bounds, see where it is calculated in
+ * PeeringState::calc_trim_to_aggressive().
+ *
+ * For more details on how peering uses the pg log, and architectural
+ * reasons for its existence, see:
+ *
+ *   doc/dev/osd_internals/log_based_pg.rst
+ *
+ */
+
 constexpr auto PGLOG_INDEXED_OBJECTS          = 1 << 0;
 constexpr auto PGLOG_INDEXED_CALLER_OPS       = 1 << 1;
 constexpr auto PGLOG_INDEXED_EXTRA_CALLER_OPS = 1 << 2;
@@ -1171,7 +1245,7 @@ public:
                             bool &dirty_big_info);
 
   void merge_log(pg_info_t &oinfo,
-		 pg_log_t &olog,
+		 pg_log_t&& olog,
 		 pg_shard_t from,
 		 pg_info_t &info, LogEntryHandler *rollbacker,
 		 bool &dirty_info, bool &dirty_big_info);
@@ -1586,123 +1660,19 @@ public:
     ) {
     return read_log_and_missing_crimson(
       store, ch, info,
-      log, missing, pgmeta_oid,
-      this);
+      log, (pg_log_debug ? &log_keys_debug : nullptr),
+      missing, pgmeta_oid, this);
   }
 
-  template <typename missing_type>
-  struct FuturizedStoreLogReader {
-    crimson::os::FuturizedStore &store;
-    crimson::os::CollectionRef ch;
-    const pg_info_t &info;
-    IndexedLog &log;
-    missing_type &missing;
-    ghobject_t pgmeta_oid;
-    const DoutPrefixProvider *dpp;
-
-    eversion_t on_disk_can_rollback_to;
-    eversion_t on_disk_rollback_info_trimmed_to;
-
-    std::map<eversion_t, hobject_t> divergent_priors;
-    bool must_rebuild = false;
-    std::list<pg_log_entry_t> entries;
-    std::list<pg_log_dup_t> dups;
-
-    std::optional<std::string> next;
-
-    void process_entry(crimson::os::FuturizedStore::OmapIteratorRef &p) {
-      if (p->key()[0] == '_')
-	return;
-      //Copy ceph::buffer::list before creating iterator
-      auto bl = p->value();
-      auto bp = bl.cbegin();
-      if (p->key() == "divergent_priors") {
-	decode(divergent_priors, bp);
-	ldpp_dout(dpp, 20) << "read_log_and_missing " << divergent_priors.size()
-			   << " divergent_priors" << dendl;
-	ceph_assert("crimson shouldn't have had divergent_priors" == 0);
-      } else if (p->key() == "can_rollback_to") {
-	decode(on_disk_can_rollback_to, bp);
-      } else if (p->key() == "rollback_info_trimmed_to") {
-	decode(on_disk_rollback_info_trimmed_to, bp);
-      } else if (p->key() == "may_include_deletes_in_missing") {
-	missing.may_include_deletes = true;
-      } else if (p->key().substr(0, 7) == std::string("missing")) {
-	hobject_t oid;
-	pg_missing_item item;
-	decode(oid, bp);
-	decode(item, bp);
-	if (item.is_delete()) {
-	  ceph_assert(missing.may_include_deletes);
-	}
-	missing.add(oid, std::move(item));
-      } else if (p->key().substr(0, 4) == std::string("dup_")) {
-	pg_log_dup_t dup;
-	decode(dup, bp);
-	if (!dups.empty()) {
-	  ceph_assert(dups.back().version < dup.version);
-	}
-	dups.push_back(dup);
-      } else {
-	pg_log_entry_t e;
-	e.decode_with_checksum(bp);
-	ldpp_dout(dpp, 20) << "read_log_and_missing " << e << dendl;
-	if (!entries.empty()) {
-	  pg_log_entry_t last_e(entries.back());
-	  ceph_assert(last_e.version.version < e.version.version);
-	  ceph_assert(last_e.version.epoch <= e.version.epoch);
-	}
-	entries.push_back(e);
-      }
-    }
-
-
-    seastar::future<> start() {
-      // will get overridden if recorded
-      on_disk_can_rollback_to = info.last_update;
-      missing.may_include_deletes = false;
-
-      auto reader = std::unique_ptr<FuturizedStoreLogReader>(this);
-      return store.get_omap_iterator(ch, pgmeta_oid).then([this](auto iter) {
-	return seastar::repeat([this, iter]() mutable {
-	  if (!iter->valid()) {
-	    return seastar::make_ready_future<seastar::stop_iteration>(
-		      seastar::stop_iteration::yes);
-	  }
-	  process_entry(iter);
-	  return iter->next().then([](int) {
-	    return seastar::stop_iteration::no;
-	  });
-	});
-      }).then([this, reader{std::move(reader)}]() {
-          log = IndexedLog(
-	     info.last_update,
-	     info.log_tail,
-	     on_disk_can_rollback_to,
-	     on_disk_rollback_info_trimmed_to,
-	     std::move(entries),
-	     std::move(dups));
-          return seastar::now();
-        });
-    }
-  };
-
-  template <typename missing_type>
   static seastar::future<> read_log_and_missing_crimson(
     crimson::os::FuturizedStore &store,
     crimson::os::CollectionRef ch,
     const pg_info_t &info,
     IndexedLog &log,
-    missing_type &missing,
+    std::set<std::string>* log_keys_debug,
+    pg_missing_tracker_t &missing,
     ghobject_t pgmeta_oid,
-    const DoutPrefixProvider *dpp = nullptr
-    ) {
-    ldpp_dout(dpp, 20) << "read_log_and_missing coll "
-		       << ch->get_cid()
-		       << " " << pgmeta_oid << dendl;
-    return (new FuturizedStoreLogReader<missing_type>{
-      store, ch, info, log, missing, pgmeta_oid, dpp})->start();
-  }
+    const DoutPrefixProvider *dpp = nullptr);
 
 #endif
 

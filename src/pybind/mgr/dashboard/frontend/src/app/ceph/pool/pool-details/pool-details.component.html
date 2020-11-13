@@ -2,29 +2,30 @@
               cdTableDetail>
   <ul ngbNav
       #nav="ngbNav"
-      class="nav-tabs">
-    <li ngbNavItem>
+      class="nav-tabs"
+      cdStatefulTab="pool-details">
+    <li ngbNavItem="details">
       <a ngbNavLink
          i18n>Details</a>
       <ng-template ngbNavContent>
         <cd-table-key-value [renderObjects]="true"
-                            [data]="filterNonPoolData(selection)"
+                            [data]="poolDetails"
                             [autoReload]="false">
         </cd-table-key-value>
       </ng-template>
     </li>
-    <li ngbNavItem
+    <li ngbNavItem="performance-details"
         *ngIf="permissions.grafana.read">
       <a ngbNavLink
          i18n>Performance Details</a>
       <ng-template ngbNavContent>
-        <cd-grafana [grafanaPath]="'ceph-pool-detail?var-pool_name='+ selection['pool_name']"
+        <cd-grafana grafanaPath="ceph-pool-detail?var-pool_name={{selection.pool_name}}"
                     uid="-xyV8KCiz"
-                    grafanaStyle="one">
+                    grafanaStyle="three">
         </cd-grafana>
       </ng-template>
     </li>
-    <li ngbNavItem
+    <li ngbNavItem="configuration"
         *ngIf="selection.type === 'replicated'">
       <a ngbNavLink
          i18n>Configuration</a>
@@ -32,7 +33,7 @@
         <cd-rbd-configuration-table [data]="selectedPoolConfiguration"></cd-rbd-configuration-table>
       </ng-template>
     </li>
-    <li ngbNavItem
+    <li ngbNavItem="cache-tiers-details"
         *ngIf="selection['tiers']?.length > 0">
       <a ngbNavLink
          i18n>Cache Tiers Details</a>

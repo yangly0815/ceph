@@ -5,23 +5,22 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { ButtonsModule } from 'ngx-bootstrap/buttons';
-import { BsDatepickerModule } from 'ngx-bootstrap/datepicker';
+import { NgbPopoverModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import { configureTestBed, FormHelper, i18nProviders } from '../../../../testing/unit-test-helper';
-import { RoleService } from '../../../shared/api/role.service';
-import { SettingsService } from '../../../shared/api/settings.service';
-import { UserService } from '../../../shared/api/user.service';
-import { ComponentsModule } from '../../../shared/components/components.module';
-import { LoadingPanelComponent } from '../../../shared/components/loading-panel/loading-panel.component';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { SharedModule } from '../../../shared/shared.module';
-import { PasswordPolicyService } from './../../../shared/services/password-policy.service';
+import { RoleService } from '~/app/shared/api/role.service';
+import { SettingsService } from '~/app/shared/api/settings.service';
+import { UserService } from '~/app/shared/api/user.service';
+import { ComponentsModule } from '~/app/shared/components/components.module';
+import { LoadingPanelComponent } from '~/app/shared/components/loading-panel/loading-panel.component';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { PasswordPolicyService } from '~/app/shared/services/password-policy.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { UserFormComponent } from './user-form.component';
 import { UserFormModel } from './user-form.model';
 
@@ -54,11 +53,9 @@ describe('UserFormComponent', () => {
         ComponentsModule,
         ToastrModule.forRoot(),
         SharedModule,
-        ButtonsModule.forRoot(),
-        BsDatepickerModule.forRoot()
+        NgbPopoverModule
       ],
-      declarations: [UserFormComponent, FakeComponent],
-      providers: i18nProviders
+      declarations: [UserFormComponent, FakeComponent]
     },
     [LoadingPanelComponent]
   );

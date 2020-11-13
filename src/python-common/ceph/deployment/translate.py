@@ -10,6 +10,7 @@ from ceph.deployment.drive_selection.selector import DriveSelection
 logger = logging.getLogger(__name__)
 
 
+# TODO refactor this to a DriveSelection method
 class to_ceph_volume(object):
 
     def __init__(self,
@@ -48,24 +49,6 @@ class to_ceph_volume(object):
                     ' '.join(journal_devices))
 
             cmd += " --filestore"
-
-        # HORRIBLE HACK
-        if self.spec.objectstore == 'bluestore' and \
-           not self.spec.encrypted and \
-           not self.spec.osds_per_device and \
-           len(data_devices) == 1 and \
-           not db_devices and \
-           not wal_devices:
-            cmd = "lvm prepare --bluestore --data %s --no-systemd" % (' '.join(data_devices))
-            if self.osd_id_claims:
-                cmd += " --osd-id {}".format(str(self.osd_id_claims[0]))
-            if self.preview:
-                # Like every horrible hack, this has sideffects on other features.
-                # In this case, 'lvm prepare' has neither a '--report' nor a '--format json' option
-                # which essentially doesn't allow for a proper previews here.
-                # Fall back to lvm batch in order to get a preview.
-                return f"lvm batch --no-auto {' '.join(data_devices)} --report --format json"
-            return cmd
 
         if self.spec.objectstore == 'bluestore':
 

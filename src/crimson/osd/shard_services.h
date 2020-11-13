@@ -44,6 +44,7 @@ namespace crimson::osd {
 class ShardServices : public md_config_obs_t {
   using cached_map_t = boost::local_shared_ptr<const OSDMap>;
   OSDMapService &osdmap_service;
+  const int whoami;
   crimson::net::Messenger &cluster_msgr;
   crimson::net::Messenger &public_msgr;
   crimson::mon::Client &monc;
@@ -61,6 +62,7 @@ class ShardServices : public md_config_obs_t {
 public:
   ShardServices(
     OSDMapService &osdmap_service,
+    const int whoami,
     crimson::net::Messenger &cluster_msgr,
     crimson::net::Messenger &public_msgr,
     crimson::mon::Client &monc,
@@ -140,7 +142,6 @@ private:
   };
   map<pg_t, pg_temp_t> pg_temp_wanted;
   map<pg_t, pg_temp_t> pg_temp_pending;
-  void _sent_pg_temp();
   friend std::ostream& operator<<(std::ostream&, const pg_temp_t&);
 public:
   void queue_want_pg_temp(pg_t pgid, const vector<int>& want,
@@ -204,6 +205,11 @@ private:
 public:
   AsyncReserver<spg_t, DirectFinisher> local_reserver;
   AsyncReserver<spg_t, DirectFinisher> remote_reserver;
+
+private:
+  epoch_t up_thru_wanted = 0;
+public:
+  seastar::future<> send_alive(epoch_t want);
 };
 
 }

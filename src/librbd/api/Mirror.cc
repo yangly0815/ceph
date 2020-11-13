@@ -8,6 +8,7 @@
 #include "common/dout.h"
 #include "common/errno.h"
 #include "cls/rbd/cls_rbd_client.h"
+#include "librbd/AsioEngine.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/Journal.h"
@@ -350,6 +351,43 @@ struct C_ImageGetGlobalStatus : public C_ImageGetInfo {
         site_status.up});
     }
     C_ImageGetInfo::finish(0);
+  }
+};
+
+template <typename I>
+struct C_ImageSnapshotCreate : public Context {
+  I *ictx;
+  uint64_t snap_create_flags;
+  uint64_t *snap_id;
+  Context *on_finish;
+
+  cls::rbd::MirrorImage mirror_image;
+  mirror::PromotionState promotion_state;
+  std::string primary_mirror_uuid;
+
+  C_ImageSnapshotCreate(I *ictx, uint64_t snap_create_flags, uint64_t *snap_id,
+                        Context *on_finish)
+    : ictx(ictx), snap_create_flags(snap_create_flags), snap_id(snap_id),
+      on_finish(on_finish) {
+  }
+
+  void finish(int r) override {
+    if (r < 0 && r != -ENOENT) {
+      on_finish->complete(r);
+      return;
+    }
+
+    if (mirror_image.mode != cls::rbd::MIRROR_IMAGE_MODE_SNAPSHOT ||
+        mirror_image.state != cls::rbd::MIRROR_IMAGE_STATE_ENABLED) {
+      lderr(ictx->cct) << "snapshot based mirroring is not enabled" << dendl;
+      on_finish->complete(-EINVAL);
+      return;
+    }
+
+    auto req = mirror::snapshot::CreatePrimaryRequest<I>::create(
+      ictx, mirror_image.global_image_id, CEPH_NOSNAP, snap_create_flags, 0U,
+      snap_id, on_finish);
+    req->send();
   }
 };
 
@@ -1836,6 +1874,7 @@ int Mirror<I>::image_global_status_list(
         static_cast<mirror_image_state_t>(info.state),
         false}; // XXX: To set "primary" right would require an additional call.
 
+    bool found_local_site_status = false;
     auto s_it = statuses_.find(image_id);
     if (s_it != statuses_.end()) {
       auto& status = s_it->second;
@@ -1843,6 +1882,11 @@ int Mirror<I>::image_global_status_list(
       global_status.site_statuses.reserve(
         status.mirror_image_site_statuses.size());
       for (auto& site_status : status.mirror_image_site_statuses) {
+        if (site_status.mirror_uuid ==
+              cls::rbd::MirrorImageSiteStatus::LOCAL_MIRROR_UUID) {
+          found_local_site_status = true;
+        }
+
         global_status.site_statuses.push_back(mirror_image_site_status_t{
           site_status.mirror_uuid,
           static_cast<mirror_image_status_state_t>(site_status.state),
@@ -1850,8 +1894,9 @@ int Mirror<I>::image_global_status_list(
             STATUS_NOT_FOUND : site_status.description,
           site_status.last_update.sec(), site_status.up});
       }
-    } else {
-      // older OSD that only returns local status
+    }
+
+    if (!found_local_site_status) {
       global_status.site_statuses.push_back(mirror_image_site_status_t{
         cls::rbd::MirrorImageSiteStatus::LOCAL_MIRROR_UUID,
         MIRROR_IMAGE_STATUS_STATE_UNKNOWN, STATUS_NOT_FOUND, 0, false});
@@ -1940,8 +1985,7 @@ int Mirror<I>::image_info_list(
       break;
     }
 
-    asio::ContextWQ *op_work_queue;
-    ImageCtx::get_work_queue(cct, &op_work_queue);
+    AsioEngine asio_engine(io_ctx);
 
     for (auto &it : images) {
       auto &image_id = it.first;
@@ -1956,7 +2000,7 @@ int Mirror<I>::image_info_list(
       // need to call get_info for every image to retrieve promotion state
 
       mirror_image_info_t info;
-      r = image_get_info(io_ctx, op_work_queue, image_id, &info);
+      r = image_get_info(io_ctx, asio_engine.get_work_queue(), image_id, &info);
       if (r >= 0) {
         (*entries)[image_id] = std::make_pair(mode, info);
       }
@@ -1971,6 +2015,15 @@ int Mirror<I>::image_info_list(
 template <typename I>
 int Mirror<I>::image_snapshot_create(I *ictx, uint32_t flags,
                                      uint64_t *snap_id) {
+  C_SaferCond ctx;
+  Mirror<I>::image_snapshot_create(ictx, flags, snap_id, &ctx);
+
+  return ctx.wait();
+}
+
+template <typename I>
+void Mirror<I>::image_snapshot_create(I *ictx, uint32_t flags,
+                                      uint64_t *snap_id, Context *on_finish) {
   CephContext *cct = ictx->cct;
   ldout(cct, 20) << "ictx=" << ictx << dendl;
 
@@ -1978,36 +2031,32 @@ int Mirror<I>::image_snapshot_create(I *ictx, uint32_t flags,
   int r = util::snap_create_flags_api_to_internal(cct, flags,
                                                   &snap_create_flags);
   if (r < 0) {
-    return r;
+    on_finish->complete(r);
+    return;
   }
 
-  r = ictx->state->refresh_if_required();
-  if (r < 0) {
-    return r;
-  }
+  auto on_refresh = new LambdaContext(
+    [ictx, snap_create_flags, snap_id, on_finish](int r) {
+      if (r < 0) {
+        lderr(ictx->cct) << "refresh failed: " << cpp_strerror(r) << dendl;
+        on_finish->complete(r);
+        return;
+      }
 
-  cls::rbd::MirrorImage mirror_image;
-  r = cls_client::mirror_image_get(&ictx->md_ctx, ictx->id,
-                                   &mirror_image);
-  if (r == -ENOENT) {
-    return -EINVAL;
-  } else if (r < 0) {
-    lderr(cct) << "failed to retrieve mirror image" << dendl;
-    return r;
-  }
+      auto ctx = new C_ImageSnapshotCreate<I>(ictx, snap_create_flags, snap_id,
+                                              on_finish);
+      auto req = mirror::GetInfoRequest<I>::create(*ictx, &ctx->mirror_image,
+                                                   &ctx->promotion_state,
+                                                   &ctx->primary_mirror_uuid,
+                                                   ctx);
+      req->send();
+    });
 
-  if (mirror_image.mode != cls::rbd::MIRROR_IMAGE_MODE_SNAPSHOT ||
-      mirror_image.state != cls::rbd::MIRROR_IMAGE_STATE_ENABLED) {
-    lderr(cct) << "snapshot based mirroring is not enabled" << dendl;
-    return -EINVAL;
+  if (ictx->state->is_refresh_required()) {
+    ictx->state->refresh(on_refresh);
+  } else {
+    on_refresh->complete(0);
   }
-
-  C_SaferCond on_finish;
-  auto req = mirror::snapshot::CreatePrimaryRequest<I>::create(
-    ictx, mirror_image.global_image_id, CEPH_NOSNAP, snap_create_flags, 0U,
-    snap_id, &on_finish);
-  req->send();
-  return on_finish.wait();
 }
 
 } // namespace api

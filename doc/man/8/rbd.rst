@@ -452,7 +452,7 @@ Commands
   Execute image migration. This step is run after a successful migration
   prepare step and copies image data to the destination.
 
-:command:`migration prepare` [--order *order*] [--object-size *object-size*] [--image-feature *image-feature*] [--image-shared] [--stripe-unit *stripe-unit*] [--stripe-count *stripe-count*] [--data-pool *data-pool*] *src-image-spec* [*dest-image-spec*]
+:command:`migration prepare` [--order *order*] [--object-size *object-size*] [--image-feature *image-feature*] [--image-shared] [--stripe-unit *stripe-unit*] [--stripe-count *stripe-count*] [--data-pool *data-pool*] [--import-only] [--source-spec *json*] [--source-spec-path *path*] *src-image-spec* [*dest-image-spec*]
   Prepare image migration. This is the first step when migrating an
   image, i.e. changing the image location, format or other
   parameters that can't be changed dynamically. The destination can
@@ -460,6 +460,11 @@ Commands
   After this step the source image is set as a parent of the
   destination image, and the image is accessible in copy-on-write mode
   by its destination spec.
+
+  An image can also be migrated from a read-only import source by adding the
+  *--import-only* optional and providing a JSON-encoded *--source-spec* or a
+  path to a JSON-encoded source-spec file using the *--source-spec-path*
+  optionals.
 
 :command:`mirror image demote` *image-spec*
   Demote a primary image to non-primary for RBD mirroring.
@@ -762,7 +767,7 @@ Per client instance `rbd device map` options:
 
 Per mapping (block device) `rbd device map` options:
 
-* rw - Map the image read-write (default).
+* rw - Map the image read-write (default).  Overridden by --read-only.
 
 * ro - Map the image read-only.  Equivalent to --read-only.
 
@@ -772,6 +777,7 @@ Per mapping (block device) `rbd device map` options:
   discards (since 4.9).
 
 * exclusive - Disable automatic exclusive lock transitions (since 4.12).
+  Equivalent to --exclusive.
 
 * lock_timeout=x - A timeout on waiting for the acquisition of exclusive lock
   (since 4.17, default is 0 seconds, meaning no timeout).
@@ -792,11 +798,75 @@ Per mapping (block device) `rbd device map` options:
   solid-state drives).  For filestore with filestore_punch_hole = false, the
   recommended setting is image object size (typically 4M).
 
+* crush_location=x - Specify the location of the client in terms of CRUSH
+  hierarchy (since 5.8).  This is a set of key-value pairs separated from
+  each other by '|', with keys separated from values by ':'.  Note that '|'
+  may need to be quoted or escaped to avoid it being interpreted as a pipe
+  by the shell.  The key is the bucket type name (e.g. rack, datacenter or
+  region with default bucket types) and the value is the bucket name.  For
+  example, to indicate that the client is local to rack "myrack", data center
+  "mydc" and region "myregion"::
+
+    crush_location=rack:myrack|datacenter:mydc|region:myregion
+
+  Each key-value pair stands on its own: "myrack" doesn't need to reside in
+  "mydc", which in turn doesn't need to reside in "myregion".  The location
+  is not a path to the root of the hierarchy but rather a set of nodes that
+  are matched independently, owning to the fact that bucket names are unique
+  within a CRUSH map.  "Multipath" locations are supported, so it is possible
+  to indicate locality for multiple parallel hierarchies::
+
+    crush_location=rack:myrack1|rack:myrack2|datacenter:mydc
+
+* read_from_replica=no - Disable replica reads, always pick the primary OSD
+  (since 5.8, default).
+
+* read_from_replica=balance - When issued a read on a replicated pool, pick
+  a random OSD for serving it (since 5.8).
+
+  This mode is safe for general use only since Octopus (i.e. after "ceph osd
+  require-osd-release octopus").  Otherwise it should be limited to read-only
+  workloads such as images mapped read-only everywhere or snapshots.
+
+* read_from_replica=localize - When issued a read on a replicated pool, pick
+  the most local OSD for serving it (since 5.8).  The locality metric is
+  calculated against the location of the client given with crush_location;
+  a match with the lowest-valued bucket type wins.  For example, with default
+  bucket types, an OSD in a matching rack is closer than an OSD in a matching
+  data center, which in turn is closer than an OSD in a matching region.
+
+  This mode is safe for general use only since Octopus (i.e. after "ceph osd
+  require-osd-release octopus").  Otherwise it should be limited to read-only
+  workloads such as images mapped read-only everywhere or snapshots.
+
+* compression_hint=none - Don't set compression hints (since 5.8, default).
+
+* compression_hint=compressible - Hint to the underlying OSD object store
+  backend that the data is compressible, enabling compression in passive mode
+  (since 5.8).
+
+* compression_hint=incompressible - Hint to the underlying OSD object store
+  backend that the data is incompressible, disabling compression in aggressive
+  mode (since 5.8).
+
+* udev - Wait for udev device manager to finish executing all matching
+  "add" rules and release the device before exiting (default).  This option
+  is not passed to the kernel.
+
+* noudev - Don't wait for udev device manager.  When enabled, the device may
+  not be fully usable immediately on exit.
+
 `rbd device unmap` options:
 
 * force - Force the unmapping of a block device that is open (since 4.9).  The
   driver will wait for running requests to complete and then unmap; requests
   sent to the driver after initiating the unmap will be failed.
+
+* udev - Wait for udev device manager to finish executing all matching
+  "remove" rules and clean up after the device before exiting (default).
+  This option is not passed to the kernel.
+
+* noudev - Don't wait for udev device manager.
 
 
 Examples

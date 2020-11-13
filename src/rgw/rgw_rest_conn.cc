@@ -1,9 +1,10 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab ft=cpp
 
-#include "rgw_rados.h"
 #include "rgw_zone.h"
 #include "rgw_rest_conn.h"
+#include "rgw_sal.h"
+#include "rgw_rados.h"
 
 #include "services/svc_zone.h"
 
@@ -75,14 +76,7 @@ int RGWRESTConn::get_url(string& endpoint)
 string RGWRESTConn::get_url()
 {
   string endpoint;
-  if (endpoints.empty()) {
-    ldout(cct, 0) << "WARNING: endpoints not configured for upstream zone" << dendl; /* we'll catch this later */
-    return endpoint;
-  }
-
-  int i = ++counter;
-  endpoint = endpoints[i % endpoints.size()];
-
+  get_url(endpoint);
   return endpoint;
 }
 
@@ -116,7 +110,7 @@ public:
     explicit StreamObjData(rgw_obj& _obj) : obj(_obj) {}
 };
 
-int RGWRESTConn::put_obj_send_init(rgw_obj& obj, const rgw_http_param_pair *extra_params, RGWRESTStreamS3PutObj **req)
+int RGWRESTConn::put_obj_send_init(rgw::sal::RGWObject* obj, const rgw_http_param_pair *extra_params, RGWRESTStreamS3PutObj **req)
 {
   string url;
   int ret = get_url(url);
@@ -137,7 +131,7 @@ int RGWRESTConn::put_obj_send_init(rgw_obj& obj, const rgw_http_param_pair *extr
   return 0;
 }
 
-int RGWRESTConn::put_obj_async(const rgw_user& uid, rgw_obj& obj, uint64_t obj_size,
+int RGWRESTConn::put_obj_async(const rgw_user& uid, rgw::sal::RGWObject* obj, uint64_t obj_size,
                                map<string, bufferlist>& attrs, bool send,
                                RGWRESTStreamS3PutObj **req)
 {
@@ -158,9 +152,10 @@ int RGWRESTConn::put_obj_async(const rgw_user& uid, rgw_obj& obj, uint64_t obj_s
   return 0;
 }
 
-int RGWRESTConn::complete_request(RGWRESTStreamS3PutObj *req, string& etag, real_time *mtime)
+int RGWRESTConn::complete_request(RGWRESTStreamS3PutObj *req, string& etag,
+                                  real_time *mtime, optional_yield y)
 {
-  int ret = req->complete_request(&etag, mtime);
+  int ret = req->complete_request(null_yield, &etag, mtime);
   delete req;
 
   return ret;
@@ -190,7 +185,7 @@ static void set_header(T val, map<string, string>& headers, const string& header
 }
 
 
-int RGWRESTConn::get_obj(const rgw_user& uid, req_info *info /* optional */, const rgw_obj& obj,
+int RGWRESTConn::get_obj(const rgw_user& uid, req_info *info /* optional */, const rgw::sal::RGWObject* obj,
                          const real_time *mod_ptr, const real_time *unmod_ptr,
                          uint32_t mod_zone_id, uint64_t mod_pg_ver,
                          bool prepend_metadata, bool get_op, bool rgwx_stat,
@@ -211,7 +206,7 @@ int RGWRESTConn::get_obj(const rgw_user& uid, req_info *info /* optional */, con
   return get_obj(obj, params, send, req);
 }
 
-int RGWRESTConn::get_obj(const rgw_obj& obj, const get_obj_params& in_params, bool send, RGWRESTStreamRWRequest **req)
+int RGWRESTConn::get_obj(const rgw::sal::RGWObject* obj, const get_obj_params& in_params, bool send, RGWRESTStreamRWRequest **req)
 {
   string url;
   int ret = get_url(url);
@@ -232,8 +227,8 @@ int RGWRESTConn::get_obj(const rgw_obj& obj, const get_obj_params& in_params, bo
   if (in_params.skip_decrypt) {
     params.push_back(param_pair_t(RGW_SYS_PARAM_PREFIX "skip-decrypt", ""));
   }
-  if (!obj.key.instance.empty()) {
-    const string& instance = obj.key.instance;
+  if (!obj->get_instance().empty()) {
+    const string& instance = obj->get_instance();
     params.push_back(param_pair_t("versionId", instance));
   }
   if (in_params.get_op) {
@@ -274,7 +269,7 @@ int RGWRESTConn::get_obj(const rgw_obj& obj, const get_obj_params& in_params, bo
     set_header(buf, extra_headers, "RANGE");
   }
 
-  int r = (*req)->send_prepare(key, extra_headers, obj);
+  int r = (*req)->send_prepare(key, extra_headers, obj->get_obj());
   if (r < 0) {
     goto done_err;
   }
@@ -299,9 +294,10 @@ int RGWRESTConn::complete_request(RGWRESTStreamRWRequest *req,
                                   real_time *mtime,
                                   uint64_t *psize,
                                   map<string, string> *pattrs,
-                                  map<string, string> *pheaders)
+                                  map<string, string> *pheaders,
+                                  optional_yield y)
 {
-  int ret = req->complete_request(etag, mtime, psize, pattrs, pheaders);
+  int ret = req->complete_request(y, etag, mtime, psize, pattrs, pheaders);
   delete req;
 
   return ret;
@@ -312,7 +308,8 @@ int RGWRESTConn::get_resource(const string& resource,
 		     map<string, string> *extra_headers,
 		     bufferlist& bl,
                      bufferlist *send_data,
-		     RGWHTTPManager *mgr)
+		     RGWHTTPManager *mgr,
+		     optional_yield y)
 {
   string url;
   int ret = get_url(url);
@@ -342,7 +339,7 @@ int RGWRESTConn::get_resource(const string& resource,
     return ret;
   }
 
-  return req.complete_request();
+  return req.complete_request(y);
 }
 
 RGWRESTReadResource::RGWRESTReadResource(RGWRESTConn *_conn,
@@ -387,7 +384,7 @@ int RGWRESTReadResource::read()
     return ret;
   }
 
-  return req.complete_request();
+  return req.complete_request(null_yield);
 }
 
 int RGWRESTReadResource::aio_read()
@@ -448,7 +445,7 @@ int RGWRESTSendResource::send(bufferlist& outbl)
     return ret;
   }
 
-  return req.complete_request();
+  return req.complete_request(null_yield);
 }
 
 int RGWRESTSendResource::aio_send(bufferlist& outbl)

@@ -8,12 +8,8 @@ import crypt
 import logging
 from tempfile import mkstemp as tempfile_mkstemp
 import math
-from six import ensure_str
-from sys import version_info as sys_version_info
-from re import search as re_search
 from time import sleep
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
-from teuthology.misc import sudo_write_file
 from teuthology.orchestra.run import CommandFailedError
 
 log = logging.getLogger(__name__)
@@ -28,6 +24,13 @@ def humansize(nbytes):
     f = ('%d' % nbytes).rstrip('.')
     return '%s%s' % (f, suffixes[i])
 
+def ensure_str(s):
+    if isinstance(s, str):
+        return s
+    if isinstance(s, bytes):
+        return s.decode()
+    raise TypeError("not expecting type '%s'" % type(s))
+    
 class TestCephFSShell(CephFSTestCase):
     CLIENTS_REQUIRED = 1
 
@@ -35,9 +38,8 @@ class TestCephFSShell(CephFSTestCase):
         super(TestCephFSShell, self).setUp()
 
         conf_contents = "[cephfs-shell]\ncolors = False\ndebug = True\n"
-        confpath = self.mount_a.run_shell(args=['mktemp']).stdout.\
-            getvalue().strip()
-        sudo_write_file(self.mount_a.client_remote, confpath, conf_contents)
+        confpath = self.mount_a.client_remote.sh('mktemp').strip()
+        self.mount_a.client_remote.write_file(confpath, conf_contents)
         self.default_shell_conf_path = confpath
 
     def run_cephfs_shell_cmd(self, cmd, mount_x=None, shell_conf_path=None,
@@ -512,18 +514,14 @@ class TestDU(TestCephFSShell):
     def test_du_works_for_regfiles(self):
         regfilename = 'some_regfile'
         regfile_abspath = path.join(self.mount_a.mountpoint, regfilename)
-        sudo_write_file(self.mount_a.client_remote, regfile_abspath, 'somedata')
+        self.mount_a.client_remote.write_file(regfile_abspath,
+                                              'somedata', sudo=True)
 
         size = humansize(self.mount_a.stat(regfile_abspath)['st_size'])
         expected_output = r'{}{}{}'.format(size, " +", regfilename)
 
         du_output = self.get_cephfs_shell_cmd_output('du ' + regfilename)
-        if sys_version_info.major >= 3:
-            self.assertRegex(du_output, expected_output)
-        elif sys_version_info.major < 3:
-            assert re_search(expected_output, du_output) != None, "\n" + \
-                   "expected_output -\n{}\ndu_output -\n{}\n".format(
-                   expected_output, du_output)
+        self.assertRegex(du_output, expected_output)
 
     def test_du_works_for_non_empty_dirs(self):
         dirname = 'some_directory'
@@ -531,7 +529,8 @@ class TestDU(TestCephFSShell):
         regfilename = 'some_regfile'
         regfile_abspath = path.join(dir_abspath, regfilename)
         self.mount_a.run_shell('mkdir ' + dir_abspath)
-        sudo_write_file(self.mount_a.client_remote, regfile_abspath, 'somedata')
+        self.mount_a.client_remote.write_file(regfile_abspath,
+                                              'somedata', sudo=True)
 
         # XXX: we stat `regfile_abspath` here because ceph du reports a non-empty
         # directory's size as sum of sizes of all files under it.
@@ -540,12 +539,7 @@ class TestDU(TestCephFSShell):
 
         sleep(10)
         du_output = self.get_cephfs_shell_cmd_output('du ' + dirname)
-        if sys_version_info.major >= 3:
-            self.assertRegex(du_output, expected_output)
-        elif sys_version_info.major < 3:
-            assert re_search(expected_output, du_output) != None, "\n" + \
-                   "expected_output -\n{}\ndu_output -\n{}\n".format(
-                   expected_output, du_output)
+        self.assertRegex(du_output, expected_output)
 
     def test_du_works_for_empty_dirs(self):
         dirname = 'some_directory'
@@ -556,18 +550,13 @@ class TestDU(TestCephFSShell):
         expected_output = r'{}{}{}'.format(size, " +", dirname)
 
         du_output = self.get_cephfs_shell_cmd_output('du ' + dirname)
-        if sys_version_info.major >= 3:
-            self.assertRegex(du_output, expected_output)
-        elif sys_version_info.major < 3:
-            assert re_search(expected_output, du_output) != None, "\n" + \
-                   "expected_output -\n{}\ndu_output -\n{}\n".format(
-                   expected_output, du_output)
+        self.assertRegex(du_output, expected_output)
 
     def test_du_works_for_hardlinks(self):
         regfilename = 'some_regfile'
         regfile_abspath = path.join(self.mount_a.mountpoint, regfilename)
-        sudo_write_file(self.mount_a.client_remote, regfile_abspath,
-                        'somedata')
+        self.mount_a.client_remote.write_file(regfile_abspath,
+                                              'somedata', sudo=True)
         hlinkname = 'some_hardlink'
         hlink_abspath = path.join(self.mount_a.mountpoint, hlinkname)
         self.mount_a.run_shell(['sudo', 'ln', regfile_abspath,
@@ -577,17 +566,13 @@ class TestDU(TestCephFSShell):
         expected_output = r'{}{}{}'.format(size, " +", hlinkname)
 
         du_output = self.get_cephfs_shell_cmd_output('du ' + hlinkname)
-        if sys_version_info.major >= 3:
-            self.assertRegex(du_output, expected_output)
-        elif sys_version_info.major < 3:
-            assert re_search(expected_output, du_output) != None, "\n" + \
-                   "expected_output -\n{}\ndu_output -\n{}\n".format(
-                   expected_output, du_output)
+        self.assertRegex(du_output, expected_output)
 
     def test_du_works_for_softlinks_to_files(self):
         regfilename = 'some_regfile'
         regfile_abspath = path.join(self.mount_a.mountpoint, regfilename)
-        sudo_write_file(self.mount_a.client_remote, regfile_abspath, 'somedata')
+        self.mount_a.client_remote.write_file(regfile_abspath,
+                                              'somedata', sudo=True)
         slinkname = 'some_softlink'
         slink_abspath = path.join(self.mount_a.mountpoint, slinkname)
         self.mount_a.run_shell(['ln', '-s', regfile_abspath, slink_abspath])
@@ -596,12 +581,7 @@ class TestDU(TestCephFSShell):
         expected_output = r'{}{}{}'.format((size), " +", slinkname)
 
         du_output = self.get_cephfs_shell_cmd_output('du ' + slinkname)
-        if sys_version_info.major >= 3:
-            self.assertRegex(du_output, expected_output)
-        elif sys_version_info.major < 3:
-            assert re_search(expected_output, du_output) != None, "\n" + \
-                   "expected_output -\n{}\ndu_output -\n{}\n".format(
-                   expected_output, du_output)
+        self.assertRegex(du_output, expected_output)
 
     def test_du_works_for_softlinks_to_dirs(self):
         dirname = 'some_directory'
@@ -615,12 +595,7 @@ class TestDU(TestCephFSShell):
         expected_output = r'{}{}{}'.format(size, " +", slinkname)
 
         du_output = self.get_cephfs_shell_cmd_output('du ' + slinkname)
-        if sys_version_info.major >= 3:
-            self.assertRegex(du_output, expected_output)
-        elif sys_version_info.major < 3:
-            assert re_search(expected_output, du_output) != None, "\n" + \
-                   "expected_output -\n{}\ndu_output -\n{}\n".format(
-                   expected_output, du_output)
+        self.assertRegex(du_output, expected_output)
 
     # NOTE: tests using these are pretty slow since to this methods sleeps for
     # 15 seconds
@@ -652,10 +627,10 @@ class TestDU(TestCephFSShell):
         self.mount_a.run_shell('mkdir -p ' + dir21_abspath)
         self.mount_a.run_shell('touch ' + regfile121_abspath)
 
-        sudo_write_file(self.mount_a.client_remote, regfile_abspath,
-            'somedata')
-        sudo_write_file(self.mount_a.client_remote, regfile121_abspath,
-            'somemoredata')
+        self.mount_a.client_remote.write_file(regfile_abspath,
+                                              'somedata', sudo=True)
+        self.mount_a.client_remote.write_file(regfile121_abspath,
+                                              'somemoredata', sudo=True)
 
         # TODO: is there a way to trigger/force update ceph.dir.rbytes?
         # wait so that attr ceph.dir.rbytes gets a chance to be updated.
@@ -706,12 +681,7 @@ class TestDU(TestCephFSShell):
         du_output = self.get_cephfs_shell_cmd_output('du -r')
 
         for expected_output in expected_patterns_in_output:
-            if sys_version_info.major >= 3:
-                self.assertRegex(du_output, expected_output)
-            elif sys_version_info.major < 3:
-                assert re_search(expected_output, du_output) != None, "\n" + \
-                       "expected_output -\n{}\ndu_output -\n{}\n".format(
-                       expected_output, du_output)
+            self.assertRegex(du_output, expected_output)
 
     def test_du_with_path_in_args(self):
         expected_patterns_in_output, path_to_files = self._setup_files(True,
@@ -723,12 +693,7 @@ class TestDU(TestCephFSShell):
         du_output = self.get_cephfs_shell_cmd_output(args)
 
         for expected_output in expected_patterns_in_output:
-            if sys_version_info.major >= 3:
-                self.assertRegex(du_output, expected_output)
-            elif sys_version_info.major < 3:
-                assert re_search(expected_output, du_output) != None, "\n" +\
-                       "expected_output -\n{}\ndu_output -\n{}\n".format(
-                       expected_output, du_output)
+            self.assertRegex(du_output, expected_output)
 
     def test_du_with_no_args(self):
         expected_patterns_in_output = self._setup_files()
@@ -739,12 +704,7 @@ class TestDU(TestCephFSShell):
             # Since CWD is CephFS root and being non-recursive expect only
             # CWD in DU report.
             if expected_output.find('/') == len(expected_output) - 1:
-                if sys_version_info.major >= 3:
-                    self.assertRegex(du_output, expected_output)
-                elif sys_version_info.major < 3:
-                    assert re_search(expected_output, du_output) != None, "\n" + \
-                        "expected_output -\n{}\ndu_output -\n{}\n".format(
-                        expected_output, du_output)
+                self.assertRegex(du_output, expected_output)
 
 
 class TestDF(TestCephFSShell):
@@ -858,8 +818,8 @@ class TestQuota(TestCephFSShell):
         file_abspath = path.join(dir_abspath, filename)
         try:
             # Write should fail as bytes quota is set to 6
-            sudo_write_file(self.mount_a.client_remote, file_abspath,
-                    'Disk raise Exception')
+            self.mount_a.client_remote.write_file(file_abspath,
+                    'Disk raise Exception', sudo=True)
             raise Exception("Write should have failed")
         except CommandFailedError:
             # Test should pass only when write command fails
@@ -956,12 +916,7 @@ class TestMisc(TestCephFSShell):
         output = self.mount_a.client_remote.sh(['cephfs-shell', 'ls']).\
             strip()
 
-        if sys_version_info.major >= 3:
-            self.assertRegex(output, dirname)
-        elif sys_version_info.major < 3:
-            assert re_search(dirname, output) != None, "\n" + \
-                   "expected_output -\n{}\ndu_output -\n{}\n".format(
-                   dirname, output)
+        self.assertRegex(output, dirname)
 
     def test_help(self):
         """
@@ -990,7 +945,7 @@ class TestShellOpts(TestCephFSShell):
     def write_tempconf(self, confcontents):
         self.tempconfpath = self.mount_a.client_remote.mktemp(
             suffix='cephfs-shell.conf')
-        sudo_write_file(self.mount_a.client_remote, self.tempconfpath,
+        self.mount_a.client_remote.write_file(self.tempconfpath,
                          confcontents)
 
     def test_reading_conf(self):

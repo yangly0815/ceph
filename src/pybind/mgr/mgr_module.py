@@ -8,13 +8,14 @@ except ImportError:
 import logging
 import errno
 import json
-import six
 import threading
 from collections import defaultdict, namedtuple
 import rados
 import re
 import time
+from mgr_util import profile_method
 
+# Full list of strings in "osd_types.cc:pg_state_string()"
 PG_STATES = [
     "active",
     "clean",
@@ -45,7 +46,12 @@ PG_STATES = [
     "snaptrim_wait",
     "snaptrim_error",
     "creating",
-    "unknown"]
+    "unknown",
+    "premerge",
+    "failed_repair",
+    "laggy",
+    "wait",
+]
 
 
 class CommandResult(object):
@@ -197,7 +203,7 @@ class CRUSHMap(ceph_module.BasePyCRUSH):
 
     def get_take_weight_osd_map(self, root):
         uglymap = self._get_take_weight_osd_map(root)
-        return {int(k): v for k, v in six.iteritems(uglymap.get('weights', {}))}
+        return {int(k): v for k, v in uglymap.get('weights', {}).items()}
 
     @staticmethod
     def have_default_choose_args(dump):
@@ -228,8 +234,8 @@ class CRUSHMap(ceph_module.BasePyCRUSH):
             return None
 
         try:
-            first_take = [s for s in rule['steps'] if s['op'] == 'take'][0]
-        except IndexError:
+            first_take = next(s for s in rule['steps'] if s.get('op') == 'take')
+        except StopIteration:
             logging.warning("CRUSH rule '{0}' has no 'take' step".format(
                 rule_name))
             return None
@@ -301,10 +307,25 @@ class CLICommand(object):
 
     def call(self, mgr, cmd_dict, inbuf):
         kwargs = {}
+        kwargs_switch = False
         for a, d in self.args_dict.items():
             if 'req' in d and d['req'] == "false" and a not in cmd_dict:
                 continue
-            kwargs[a.replace("-", "_")] = cmd_dict[a]
+
+            if isinstance(cmd_dict[a], str) and '=' in cmd_dict[a]:
+                k, arg = cmd_dict[a].split('=', 1)
+                if k in self.args_dict:
+                    kwargs_switch = True
+
+            if kwargs_switch:
+                try:
+                    k, arg = cmd_dict[a].split('=', 1)
+                except ValueError as e:
+                    mgr.log.error('found positional arg after switching to kwarg parsing')
+                    return -errno.EINVAL, '', 'Error EINVAL: postitional arg not allowed after kwarg'
+                kwargs[k.replace("-", "_")] = arg
+            else:
+                kwargs[a.replace("-", "_")] = cmd_dict[a]
         if inbuf:
             kwargs['inbuf'] = inbuf
         assert self.func
@@ -1057,7 +1078,7 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         """
         return self._ceph_get_server(None)
 
-    def get_metadata(self, svc_type, svc_id):
+    def get_metadata(self, svc_type, svc_id, default=None):
         """
         Fetch the daemon metadata for a particular service.
 
@@ -1070,7 +1091,10 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
             calling this
         :rtype: dict, or None if no metadata found
         """
-        return self._ceph_get_metadata(svc_type, svc_id)
+        metadata = self._ceph_get_metadata(svc_type, svc_id)
+        if metadata is None:
+            return default
+        return metadata
 
     def get_daemon_status(self, svc_type, svc_id):
         """
@@ -1380,6 +1404,7 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         else:
             return 0, 0
 
+    @profile_method()
     def get_all_perf_counters(self, prio_limit=PRIO_USEFUL,
                               services=("mds", "mon", "osd",
                                         "rbd-mirror", "rgw", "tcmu-runner")):
@@ -1466,10 +1491,11 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
 
         return self._ceph_have_mon_connection()
 
-    def update_progress_event(self, evid, desc, progress):
+    def update_progress_event(self, evid, desc, progress, add_to_ceph_s):
         return self._ceph_update_progress_event(str(evid),
                                                 str(desc),
-                                                float(progress))
+                                                float(progress), 
+                                                bool(add_to_ceph_s))
 
     def complete_progress_event(self, evid):
         return self._ceph_complete_progress_event(str(evid))
@@ -1577,6 +1603,51 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
         :param int query_id: query ID
         """
         return self._ceph_get_osd_perf_counters(query_id)
+
+    def add_mds_perf_query(self, query):
+        """
+        Register an MDS perf query.  Argument is a
+        dict of the query parameters, in this form:
+
+        ::
+
+           {
+             'key_descriptor': [
+               {'type': subkey_type, 'regex': regex_pattern},
+               ...
+             ],
+             'performance_counter_descriptors': [
+               list, of, descriptor, types
+             ],
+           }
+
+        NOTE: 'limit' and 'order_by' are not supported (yet).
+
+        Valid subkey types:
+           'mds_rank', 'client_id'
+        Valid performance counter types:
+           'cap_hit_metric'
+
+        :param object query: query
+        :rtype: int (query id)
+        """
+        return self._ceph_add_mds_perf_query(query)
+
+    def remove_mds_perf_query(self, query_id):
+        """
+        Unregister an MDS perf query.
+
+        :param int query_id: query ID
+        """
+        return self._ceph_remove_mds_perf_query(query_id)
+
+    def get_mds_perf_counters(self, query_id):
+        """
+        Get stats collected for an MDS perf query.
+
+        :param int query_id: query ID
+        """
+        return self._ceph_get_mds_perf_counters(query_id)
 
     def is_authorized(self, arguments):
         """

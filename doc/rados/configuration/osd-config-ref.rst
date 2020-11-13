@@ -218,37 +218,53 @@ scrubbing operations.
 
 ``osd scrub begin hour``
 
-:Description: The time of day for the lower bound when a scheduled scrub can be
-              performed.
-:Type: Integer in the range of 0 to 24
+:Description: This restricts scrubbing to this hour of the day or later.
+              Use ``osd scrub begin hour = 0`` and ``osd scrub end hour = 0``
+              to allow scrubbing the entire day.  Along with ``osd scrub end hour``, they define a time
+              window, in which the scrubs can happen.
+              But a scrub will be performed
+              no matter whether the time window allows or not, as long as the placement
+              group's scrub interval exceeds ``osd scrub max interval``.
+:Type: Integer in the range of 0 to 23
 :Default: ``0``
 
 
 ``osd scrub end hour``
 
-:Description: The time of day for the upper bound when a scheduled scrub can be
-              performed. Along with ``osd scrub begin hour``, they define a time
+:Description: This restricts scrubbing to the hour earlier than this.
+              Use ``osd scrub begin hour = 0`` and ``osd scrub end hour = 0`` to allow scrubbing
+              for the entire day.  Along with ``osd scrub begin hour``, they define a time
               window, in which the scrubs can happen. But a scrub will be performed
-              no matter the time window allows or not, as long as the placement
+              no matter whether the time window allows or not, as long as the placement
               group's scrub interval exceeds ``osd scrub max interval``.
-:Type: Integer in the range of 0 to 24
-:Default: ``24``
+:Type: Integer in the range of 0 to 23
+:Default: ``0``
 
 
 ``osd scrub begin week day``
 
 :Description: This restricts scrubbing to this day of the week or later.
-              0 or 7 = Sunday, 1 = Monday, etc.
-:Type: Integer in the range of 0 to 7
+              0  = Sunday, 1 = Monday, etc. Use ``osd scrub begin week day = 0``
+              and ``osd scrub end week day = 0`` to allow scrubbing for the entire week.
+              Along with ``osd scrub end week day``, they define a time window, in which
+              the scrubs can happen. But a scrub will be performed
+              no matter whether the time window allows or not, as long as the placement
+              group's scrub interval exceeds ``osd scrub max interval``.
+:Type: Integer in the range of 0 to 6
 :Default: ``0``
 
 
 ``osd scrub end week day``
 
 :Description: This restricts scrubbing to days of the week earlier than this.
-              0 or 7 = Sunday, 1 = Monday, etc.
-:Type: Integer in the range of 0 to 7
-:Default: ``7``
+              0 = Sunday, 1 = Monday, etc.  Use ``osd scrub begin week day = 0``
+              and ``osd scrub end week day = 0`` to allow scrubbing for the entire week.
+              Along with ``osd scrub begin week day``, they define a time
+              window, in which the scrubs can happen. But a scrub will be performed
+              no matter whether the time window allows or not, as long as the placement
+              group's scrub interval exceeds ``osd scrub max interval``.
+:Type: Integer in the range of 0 to 6
+:Default: ``0``
 
 
 ``osd scrub during recovery``
@@ -258,7 +274,7 @@ scrubbing operations.
               Already running scrubs will be continued. This might be useful to reduce
               load on busy clusters.
 :Type: Boolean
-:Default: ``true``
+:Default: ``false``
 
 
 ``osd scrub thread timeout``
@@ -274,7 +290,7 @@ scrubbing operations.
               thread.
 
 :Type: 32-bit Integer
-:Default: ``60*10``
+:Default: ``10*60``
 
 
 ``osd scrub load threshold``
@@ -293,7 +309,7 @@ scrubbing operations.
               when the Ceph Storage Cluster load is low.
 
 :Type: Float
-:Default: Once per day. ``60*60*24``
+:Default: Once per day. ``24*60*60``
 
 
 ``osd scrub max interval``
@@ -302,7 +318,7 @@ scrubbing operations.
               irrespective of cluster load.
 
 :Type: Float
-:Default: Once per week. ``7*60*60*24``
+:Default: Once per week. ``7*24*60*60``
 
 
 ``osd scrub chunk min``
@@ -337,7 +353,7 @@ scrubbing operations.
               ``osd scrub load threshold`` does not affect this setting.
 
 :Type: Float
-:Default: Once per week.  ``60*60*24*7``
+:Default: Once per week.  ``7*24*60*60``
 
 
 ``osd scrub interval randomize ratio``
@@ -384,22 +400,16 @@ Operations
 :Description: This sets the type of queue to be used for prioritizing ops
               in the OSDs. Both queues feature a strict sub-queue which is
               dequeued before the normal queue. The normal queue is different
-              between implementations. The original PrioritizedQueue (``prio``) uses a
-              token bucket system which when there are sufficient tokens will
-              dequeue high priority queues first. If there are not enough
-              tokens available, queues are dequeued low priority to high priority.
-              The WeightedPriorityQueue (``wpq``) dequeues all priorities in
-              relation to their priorities to prevent starvation of any queue.
-              WPQ should help in cases where a few OSDs are more overloaded
-              than others. The new mClock based OpClassQueue
-              (``mclock_opclass``) prioritizes operations based on which class
+              between implementations. The WeightedPriorityQueue (``wpq``)
+              dequeues operations in relation to their priorities to prevent
+              starvation of any queue. WPQ should help in cases where a few OSDs
+              are more overloaded than others. The new mClockQueue
+              (``mclock_scheduler``) prioritizes operations based on which class
               they belong to (recovery, scrub, snaptrim, client op, osd subop).
-              And, the mClock based ClientQueue (``mclock_client``) also
-              incorporates the client identifier in order to promote fairness
-              between clients. See `QoS Based on mClock`_. Requires a restart.
+              See `QoS Based on mClock`_. Requires a restart.
 
 :Type: String
-:Valid Choices: prio, wpq, mclock_opclass, mclock_client
+:Valid Choices: wpq, mclock_scheduler
 :Default: ``wpq``
 
 
@@ -558,7 +568,7 @@ based on `the dmClock algorithm`_. This algorithm allocates the I/O
 resources of the Ceph cluster in proportion to weights, and enforces
 the constraints of minimum reservation and maximum limitation, so that
 the services can compete for the resources fairly. Currently the
-*mclock_opclass* operation queue divides Ceph services involving I/O
+*mclock_scheduler* operation queue divides Ceph services involving I/O
 resources into following buckets:
 
 - client op: the iops issued by client
@@ -596,12 +606,6 @@ portion of the I/O resource, because its weight is "9", while its
 competitor "1". In the case of client ops, it is not clamped by the
 limit setting, so it can make use of all the resources if there is no
 recovery ongoing.
-
-Along with *mclock_opclass* another mclock operation queue named
-*mclock_client* is available. It divides operations based on category
-but also divides them based on the client making the request. This
-helps not only manage the distribution of resources spent on different
-classes of operations but also tries to ensure fairness among clients.
 
 CURRENT IMPLEMENTATION NOTE: the current experimental implementation
 does not enforce the limit values. As a first approximation we decided
@@ -689,124 +693,76 @@ mClock and dmClock experiments in the ceph-devel mailing list.
 :Default: 8 MiB
 
 
-``osd op queue mclock client op res``
+``osd mclock scheduler client res``
 
-:Description: the reservation of client op.
+:Description: IO proportion reserved for each client (default).
 
-:Type: Float
-:Default: 1000.0
-
-
-``osd op queue mclock client op wgt``
-
-:Description: the weight of client op.
-
-:Type: Float
-:Default: 500.0
+:Type: Unsigned Integer
+:Default: 1
 
 
-``osd op queue mclock client op lim``
+``osd mclock scheduler client wgt``
 
-:Description: the limit of client op.
+:Description: IO share for each client (default) over reservation.
 
-:Type: Float
-:Default: 1000.0
-
-
-``osd op queue mclock osd subop res``
-
-:Description: the reservation of osd subop.
-
-:Type: Float
-:Default: 1000.0
+:Type: Unsigned Integer
+:Default: 1
 
 
-``osd op queue mclock osd subop wgt``
+``osd mclock scheduler client lim``
 
-:Description: the weight of osd subop.
+:Description: IO limit for each client (default) over reservation.
 
-:Type: Float
-:Default: 500.0
-
-
-``osd op queue mclock osd subop lim``
-
-:Description: the limit of osd subop.
-
-:Type: Float
-:Default: 0.0
+:Type: Unsigned Integer
+:Default: 999999
 
 
-``osd op queue mclock snap res``
+``osd mclock scheduler background recovery res``
 
-:Description: the reservation of snap trimming.
+:Description: IO proportion reserved for background recovery (default).
 
-:Type: Float
-:Default: 0.0
-
-
-``osd op queue mclock snap wgt``
-
-:Description: the weight of snap trimming.
-
-:Type: Float
-:Default: 1.0
+:Type: Unsigned Integer
+:Default: 1
 
 
-``osd op queue mclock snap lim``
+``osd mclock scheduler background recovery wgt``
 
-:Description: the limit of snap trimming.
+:Description: IO share for each background recovery over reservation.
 
-:Type: Float
-:Default: 0.001
-
-
-``osd op queue mclock recov res``
-
-:Description: the reservation of recovery.
-
-:Type: Float
-:Default: 0.0
+:Type: Unsigned Integer
+:Default: 1
 
 
-``osd op queue mclock recov wgt``
+``osd mclock scheduler background recovery lim``
 
-:Description: the weight of recovery.
+:Description: IO limit for background recovery over reservation.
 
-:Type: Float
-:Default: 1.0
-
-
-``osd op queue mclock recov lim``
-
-:Description: the limit of recovery.
-
-:Type: Float
-:Default: 0.001
+:Type: Unsigned Integer
+:Default: 999999
 
 
-``osd op queue mclock scrub res``
+``osd mclock scheduler background best effort res``
 
-:Description: the reservation of scrub jobs.
+:Description: IO proportion reserved for background best_effort (default).
 
-:Type: Float
-:Default: 0.0
-
-
-``osd op queue mclock scrub wgt``
-
-:Description: the weight of scrub jobs.
-
-:Type: Float
-:Default: 1.0
+:Type: Unsigned Integer
+:Default: 1
 
 
-``osd op queue mclock scrub lim``
+``osd mclock scheduler background best effort wgt``
 
-:Description: the limit of scrub jobs.
+:Description: IO share for each background best_effort over reservation.
 
-:Type: Float
-:Default: 0.001
+:Type: Unsigned Integer
+:Default: 1
+
+
+``osd mclock scheduler background best effort lim``
+
+:Description: IO limit for background best_effort over reservation.
+
+:Type: Unsigned Integer
+:Default: 999999
 
 .. _the dmClock algorithm: https://www.usenix.org/legacy/event/osdi10/tech/full_papers/Gulati.pdf
 
@@ -1056,14 +1012,14 @@ Miscellaneous
 
 :Description: The maximum time in seconds before timing out a snap trim thread.
 :Type: 32-bit Integer
-:Default: ``60*60*1``
+:Default: ``1*60*60``
 
 
 ``osd backlog thread timeout``
 
 :Description: The maximum time in seconds before timing out a backlog thread.
 :Type: 32-bit Integer
-:Default: ``60*60*1``
+:Default: ``1*60*60``
 
 
 ``osd default notify timeout``

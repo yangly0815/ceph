@@ -2,12 +2,11 @@ import { Component, EventEmitter, Output } from '@angular/core';
 import { Validators } from '@angular/forms';
 
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { RgwUserCapabilities } from '../models/rgw-user-capabilities';
 import { RgwUserCapability } from '../models/rgw-user-capability';
 
@@ -33,10 +32,9 @@ export class RgwUserCapabilityModalComponent {
   constructor(
     private formBuilder: CdFormBuilder,
     public activeModal: NgbActiveModal,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
-    this.resource = this.i18n('capability');
+    this.resource = $localize`capability`;
     this.createForm();
   }
 

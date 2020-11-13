@@ -65,7 +65,7 @@ seastar::future<> Heartbeat::start(entity_addrvec_t front_addrs,
                                    start_messenger(*back_msgr,
 						   back_addrs,
 						   chained_dispatchers))
-    .then([this] {
+    .then_unpack([this] {
       timer.arm_periodic(
         std::chrono::seconds(local_conf()->osd_heartbeat_interval));
     });
@@ -95,6 +95,8 @@ seastar::future<> Heartbeat::stop()
   return gate.close().then([this] {
     return seastar::when_all_succeed(front_msgr->shutdown(),
 				     back_msgr->shutdown());
+  }).then_unpack([] {
+    return seastar::now();
   });
 }
 
@@ -126,16 +128,20 @@ void Heartbeat::add_peer(osd_id_t _peer, epoch_t epoch)
 
 Heartbeat::osds_t Heartbeat::remove_down_peers()
 {
-  osds_t osds;
-  for (auto& [osd, peer] : peers) {
+  osds_t old_osds; // osds not added in this epoch
+  for (auto i = peers.begin(); i != peers.end(); ) {
     auto osdmap = service.get_osdmap_service().get_map();
+    const auto& [osd, peer] = *i;
     if (!osdmap->is_up(osd)) {
-      remove_peer(osd);
-    } else if (peer.get_epoch() < osdmap->get_epoch()) {
-      osds.push_back(osd);
+      i = peers.erase(i);
+    } else {
+      if (peer.get_epoch() < osdmap->get_epoch()) {
+        old_osds.push_back(osd);
+      }
+      ++i;
     }
   }
-  return osds;
+  return old_osds;
 }
 
 void Heartbeat::add_reporter_peers(int whoami)
@@ -184,10 +190,19 @@ void Heartbeat::update_peers(int whoami)
   }
 }
 
+Heartbeat::osds_t Heartbeat::get_peers() const
+{
+  osds_t osds;
+  osds.reserve(peers.size());
+  for (auto& peer : peers) {
+    osds.push_back(peer.first);
+  }
+  return osds;
+}
+
 void Heartbeat::remove_peer(osd_id_t peer)
 {
-  auto found = peers.find(peer);
-  assert(found != peers.end());
+  assert(peers.count(peer) == 1);
   peers.erase(peer);
 }
 
@@ -387,7 +402,7 @@ void Heartbeat::Connection::replaced()
   racing_detected = true;
   logger().warn("Heartbeat::Connection::replaced(): {} racing", *this);
   assert(conn != replaced_conn);
-  assert(!conn->is_connected());
+  assert(conn->is_connected());
 }
 
 void Heartbeat::Connection::reset()
@@ -634,6 +649,7 @@ bool Heartbeat::FailingPeers::add_pending(
   failure_pending.emplace(peer, failure_info_t{failed_since,
                                                osdmap->get_addrs(peer)});
   futures.push_back(heartbeat.monc.send_message(failure_report));
+  logger().info("{}: osd.{} failed for {}", __func__, peer, failed_for);
   return true;
 }
 
@@ -659,5 +675,6 @@ Heartbeat::FailingPeers::send_still_alive(
     0,
     heartbeat.service.get_osdmap_service().get_map()->get_epoch(),
     MOSDFailure::FLAG_ALIVE);
+  logger().info("{}: osd.{}", __func__, osd);
   return heartbeat.monc.send_message(still_alive);
 }

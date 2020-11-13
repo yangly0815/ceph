@@ -28,9 +28,12 @@ BtreeLBAManager::mkfs_ret BtreeLBAManager::mkfs(
       t,
       LBA_BLOCK_SIZE);
     root_leaf->set_size(0);
+    lba_node_meta_t meta{0, L_ADDR_MAX, 1};
+    root_leaf->set_meta(meta);
+    root_leaf->pin.set_range(meta);
     croot->get_lba_root() =
       root_t{
-        0,
+        1,
         0,
         root_leaf->get_paddr(),
         make_record_relative_paddr(0)};
@@ -47,8 +50,7 @@ BtreeLBAManager::get_root(Transaction &t)
       paddr_t{croot->get_lba_root().lba_root_addr},
       unsigned(croot->get_lba_root().lba_depth));
     return get_lba_btree_extent(
-      cache,
-      t,
+      get_context(t),
       croot->get_lba_root().lba_depth,
       croot->get_lba_root().lba_root_addr,
       paddr_t());
@@ -64,7 +66,9 @@ BtreeLBAManager::get_mapping(
   return get_root(
     t).safe_then([this, &t, offset, length](auto extent) {
       return extent->lookup_range(
-	cache, t, offset, length);
+	get_context(t),
+	offset, length
+      ).safe_then([extent](auto ret) { return ret; });
     }).safe_then([](auto &&e) {
       logger().debug("BtreeLBAManager::get_mapping: got mapping {}", e);
       return get_mapping_ret(
@@ -110,8 +114,7 @@ BtreeLBAManager::alloc_extent(
 	"BtreeLBAManager::alloc_extent: beginning search at {}",
 	*extent);
       return extent->find_hole(
-	cache,
-	t,
+	get_context(t),
 	hint,
 	L_ADDR_MAX,
 	len).safe_then([extent](auto ret) {
@@ -157,12 +160,296 @@ BtreeLBAManager::set_extent(
     });
 }
 
-BtreeLBAManager::submit_lba_transaction_ret
-BtreeLBAManager::submit_lba_transaction(
+static bool is_lba_node(extent_types_t type)
+{
+  return type == extent_types_t::LADDR_INTERNAL ||
+    type == extent_types_t::LADDR_LEAF;
+}
+
+static bool is_lba_node(const CachedExtent &e)
+{
+  return is_lba_node(e.get_type());
+}
+
+btree_range_pin_t &BtreeLBAManager::get_pin(CachedExtent &e)
+{
+  if (is_lba_node(e)) {
+    return e.cast<LBANode>()->pin;
+  } else if (e.is_logical()) {
+    return static_cast<BtreeLBAPin &>(
+      e.cast<LogicalCachedExtent>()->get_pin()).pin;
+  } else {
+    ceph_abort_msg("impossible");
+  }
+}
+
+static depth_t get_depth(const CachedExtent &e)
+{
+  if (is_lba_node(e)) {
+    return e.cast<LBANode>()->get_node_meta().depth;
+  } else if (e.is_logical()) {
+    return 0;
+  } else {
+    ceph_assert(0 == "currently impossible");
+    return 0;
+  }
+}
+
+BtreeLBAManager::complete_transaction_ret
+BtreeLBAManager::complete_transaction(
   Transaction &t)
 {
-  // This is a noop for now and may end up not being necessary
-  return submit_lba_transaction_ertr::now();
+  std::vector<CachedExtentRef> to_clear;
+  to_clear.reserve(t.get_retired_set().size());
+  for (auto &e: t.get_retired_set()) {
+    if (e->is_logical() || is_lba_node(*e))
+      to_clear.push_back(e);
+  }
+  // need to call check_parent from leaf->parent
+  std::sort(
+    to_clear.begin(), to_clear.end(),
+    [](auto &l, auto &r) { return get_depth(*l) < get_depth(*r); });
+
+  for (auto &e: to_clear) {
+    auto &pin = get_pin(*e);
+    logger().debug("{}: retiring {}, {}", __func__, *e, pin);
+    pin_set.retire(pin);
+  }
+
+  // ...but add_pin from parent->leaf
+  std::vector<CachedExtentRef> to_link;
+  to_link.reserve(t.get_fresh_block_list().size());
+  for (auto &e: t.get_fresh_block_list()) {
+    if (e->is_valid() && (is_lba_node(*e) || e->is_logical()))
+      to_link.push_back(e);
+  }
+  std::sort(
+    to_link.begin(), to_link.end(),
+    [](auto &l, auto &r) -> bool { return get_depth(*l) > get_depth(*r); });
+
+  for (auto &e : to_link) {
+    logger().debug("{}: linking {}", __func__, *e);
+    pin_set.add_pin(get_pin(*e));
+  }
+
+  for (auto &e: to_clear) {
+    auto &pin = get_pin(*e);
+    logger().debug("{}: checking {}, {}", __func__, *e, pin);
+    pin_set.check_parent(pin);
+  }
+  return complete_transaction_ertr::now();
+}
+
+BtreeLBAManager::init_cached_extent_ret BtreeLBAManager::init_cached_extent(
+  Transaction &t,
+  CachedExtentRef e)
+{
+  logger().debug("{}: {}", __func__, *e);
+  return get_root(t).safe_then(
+    [this, &t, e=std::move(e)](LBANodeRef root) mutable {
+      if (is_lba_node(*e)) {
+	auto lban = e->cast<LBANode>();
+	logger().debug("init_cached_extent: lba node, getting root");
+	return root->lookup(
+	  op_context_t{cache, pin_set, t},
+	  lban->get_node_meta().begin,
+	  lban->get_node_meta().depth
+	).safe_then([this, e=std::move(e)](LBANodeRef c) {
+	  if (c->get_paddr() == e->get_paddr()) {
+	    assert(&*c == &*e);
+	    logger().debug("init_cached_extent: {} initialized", *e);
+	  } else {
+	    // e is obsolete
+	    logger().debug("init_cached_extent: {} obsolete", *e);
+	    cache.drop_from_cache(e);
+	  }
+	  return init_cached_extent_ertr::now();
+	});
+      } else if (e->is_logical()) {
+	auto logn = e->cast<LogicalCachedExtent>();
+	return root->lookup_range(
+	  op_context_t{cache, pin_set, t},
+	  logn->get_laddr(),
+	  logn->get_length()).safe_then(
+	    [this, logn=std::move(logn)](auto pins) {
+	      if (pins.size() == 1) {
+		auto pin = std::move(pins.front());
+		pins.pop_front();
+		if (pin->get_paddr() == logn->get_paddr()) {
+		  logn->set_pin(std::move(pin));
+		  pin_set.add_pin(
+		    static_cast<BtreeLBAPin&>(logn->get_pin()).pin);
+		  logger().debug("init_cached_extent: {} initialized", *logn);
+		} else {
+		  // paddr doesn't match, remapped, obsolete
+		  logger().debug("init_cached_extent: {} obsolete", *logn);
+		  cache.drop_from_cache(logn);
+		}
+	      } else {
+		// set of extents changed, obsolete
+		logger().debug("init_cached_extent: {} obsolete", *logn);
+		cache.drop_from_cache(logn);
+	      }
+	      return init_cached_extent_ertr::now();
+	    });
+      } else {
+	logger().debug("init_cached_extent: {} skipped", *e);
+	return init_cached_extent_ertr::now();
+      }
+    });
+}
+
+BtreeLBAManager::scan_mappings_ret BtreeLBAManager::scan_mappings(
+  Transaction &t,
+  laddr_t begin,
+  laddr_t end,
+  scan_mappings_func_t &&f)
+{
+  return seastar::do_with(
+    std::move(f),
+    LBANodeRef(),
+    [=, &t](auto &f, auto &lbarootref) {
+      return get_root(t).safe_then(
+	[=, &t, &f](LBANodeRef lbaroot) mutable {
+	  lbarootref = lbaroot;
+	  return lbaroot->scan_mappings(
+	    get_context(t),
+	    begin,
+	    end,
+	    f);
+	});
+    });
+}
+
+BtreeLBAManager::scan_mapped_space_ret BtreeLBAManager::scan_mapped_space(
+    Transaction &t,
+    scan_mapped_space_func_t &&f)
+{
+  return seastar::do_with(
+    std::move(f),
+    LBANodeRef(),
+    [=, &t](auto &f, auto &lbarootref) {
+      return get_root(t).safe_then(
+	[=, &t, &f](LBANodeRef lbaroot) mutable {
+	  lbarootref = lbaroot;
+	  return lbaroot->scan_mapped_space(
+	    get_context(t),
+	    f);
+	});
+    });
+}
+
+BtreeLBAManager::rewrite_extent_ret BtreeLBAManager::rewrite_extent(
+  Transaction &t,
+  CachedExtentRef extent)
+{
+  if (extent->is_logical()) {
+    auto lextent = extent->cast<LogicalCachedExtent>();
+    cache.retire_extent(t, extent);
+    auto nlextent = cache.alloc_new_extent_by_type(
+      t,
+      lextent->get_type(),
+      lextent->get_length())->cast<LogicalCachedExtent>();
+    lextent->get_bptr().copy_out(
+      0,
+      lextent->get_length(),
+      nlextent->get_bptr().c_str());
+    nlextent->set_laddr(lextent->get_laddr());
+    nlextent->set_pin(lextent->get_pin().duplicate());
+
+    logger().debug(
+      "{}: rewriting {} into {}",
+      __func__,
+      *lextent,
+      *nlextent);
+
+    return update_mapping(
+      t,
+      lextent->get_laddr(),
+      [prev_addr = lextent->get_paddr(), addr = nlextent->get_paddr()](
+	const lba_map_val_t &in) {
+	lba_map_val_t ret = in;
+	ceph_assert(in.paddr == prev_addr);
+	ret.paddr = addr;
+	return ret;
+      }).safe_then([nlextent](auto e) {}).handle_error(
+	rewrite_extent_ertr::pass_further{},
+        /* ENOENT in particular should be impossible */
+	crimson::ct_error::assert_all{}
+      );
+  } else if (is_lba_node(*extent)) {
+    auto lba_extent = extent->cast<LBANode>();
+    cache.retire_extent(t, extent);
+    auto nlba_extent = cache.alloc_new_extent_by_type(
+      t,
+      lba_extent->get_type(),
+      lba_extent->get_length())->cast<LBANode>();
+    lba_extent->get_bptr().copy_out(
+      0,
+      lba_extent->get_length(),
+      nlba_extent->get_bptr().c_str());
+    nlba_extent->pin.set_range(nlba_extent->get_node_meta());
+
+    /* This is a bit underhanded.  Any relative addrs here must necessarily
+     * be record relative as we are rewriting a dirty extent.  Thus, we
+     * are using resolve_relative_addrs with a (likely negative) block
+     * relative offset to correct them to block-relative offsets adjusted
+     * for our new transaction location.
+     *
+     * Upon commit, these now block relative addresses will be interpretted
+     * against the real final address.
+     */
+    nlba_extent->resolve_relative_addrs(
+      make_record_relative_paddr(0) - nlba_extent->get_paddr());
+
+    return update_internal_mapping(
+      t,
+      nlba_extent->get_node_meta().depth,
+      nlba_extent->get_node_meta().begin,
+      nlba_extent->get_paddr()).safe_then(
+	[](auto) {},
+	rewrite_extent_ertr::pass_further {},
+	crimson::ct_error::assert_all{});
+  } else {
+    return rewrite_extent_ertr::now();
+  }
+}
+
+BtreeLBAManager::get_physical_extent_if_live_ret
+BtreeLBAManager::get_physical_extent_if_live(
+  Transaction &t,
+  extent_types_t type,
+  paddr_t addr,
+  laddr_t laddr,
+  segment_off_t len)
+{
+  ceph_assert(is_lba_node(type));
+  return cache.get_extent_by_type(
+    t,
+    type,
+    addr,
+    laddr,
+    len
+  ).safe_then([=, &t](CachedExtentRef extent) {
+    return get_root(t).safe_then([=, &t](LBANodeRef root) {
+      auto lba_node = extent->cast<LBANode>();
+      return root->lookup(
+	op_context_t{cache, pin_set, t},
+	lba_node->get_node_meta().begin,
+	lba_node->get_node_meta().depth).safe_then([=, &t](LBANodeRef c) {
+	  if (c->get_paddr() == lba_node->get_paddr()) {
+	    return get_physical_extent_if_live_ret(
+	      get_physical_extent_if_live_ertr::ready_future_marker{},
+	      lba_node);
+	  } else {
+	    cache.drop_from_cache(lba_node);
+	    return get_physical_extent_if_live_ret(
+	      get_physical_extent_if_live_ertr::ready_future_marker{},
+	      CachedExtentRef());
+	  }
+	});
+    });
+  });
 }
 
 BtreeLBAManager::BtreeLBAManager(
@@ -191,19 +478,25 @@ BtreeLBAManager::insert_mapping_ret BtreeLBAManager::insert_mapping(
 	  croot = mut_croot->cast<RootBlock>();
 	}
 	auto nroot = cache.alloc_new_extent<LBAInternalNode>(t, LBA_BLOCK_SIZE);
-	nroot->set_depth(root->depth + 1);
+	lba_node_meta_t meta{0, L_ADDR_MAX, root->get_node_meta().depth + 1};
+	nroot->set_meta(meta);
+	nroot->pin.set_range(meta);
 	nroot->journal_insert(
 	  nroot->begin(),
 	  L_ADDR_MIN,
 	  root->get_paddr(),
 	  nullptr);
 	croot->get_lba_root().lba_root_addr = nroot->get_paddr();
-	croot->get_lba_root().lba_depth = root->depth + 1;
-	return nroot->split_entry(cache, t, laddr, nroot->begin(), root);
+	croot->get_lba_root().lba_depth = root->get_node_meta().depth + 1;
+	return nroot->split_entry(
+	  get_context(t),
+	  laddr, nroot->begin(), root);
       });
   }
   return split.safe_then([this, &t, laddr, val](LBANodeRef node) {
-    return node->insert(cache, t, laddr, val);
+    return node->insert(
+      get_context(t),
+      laddr, val);
   });
 }
 
@@ -219,16 +512,9 @@ BtreeLBAManager::update_refcount_ret BtreeLBAManager::update_refcount(
       lba_map_val_t out = in;
       ceph_assert((int)out.refcount + delta >= 0);
       out.refcount += delta;
-      if (out.refcount == 0) {
-	return std::optional<lba_map_val_t>();
-      } else {
-	return std::optional<lba_map_val_t>(out);
-      }
+      return out;
     }).safe_then([](auto result) {
-      if (!result)
-	return 0u;
-      else
-	return result->refcount;
+      return ref_update_result_t{result.refcount, result.paddr};
     });
 }
 
@@ -240,10 +526,53 @@ BtreeLBAManager::update_mapping_ret BtreeLBAManager::update_mapping(
   return get_root(t
   ).safe_then([this, f=std::move(f), &t, addr](LBANodeRef root) mutable {
     return root->mutate_mapping(
-      cache,
-      t,
+      get_context(t),
       addr,
       std::move(f));
+  });
+}
+
+BtreeLBAManager::update_internal_mapping_ret
+BtreeLBAManager::update_internal_mapping(
+  Transaction &t,
+  depth_t depth,
+  laddr_t laddr,
+  paddr_t paddr)
+{
+  return cache.get_root(t).safe_then([=, &t](RootBlockRef croot) {
+    if (depth == croot->get_lba_root().lba_depth) {
+      logger().debug(
+	"update_internal_mapping: updating lba root to: {}->{}",
+	laddr,
+	paddr);
+      {
+	auto mut_croot = cache.duplicate_for_write(t, croot);
+	croot = mut_croot->cast<RootBlock>();
+      }
+      ceph_assert(laddr == 0);
+      auto old_paddr = croot->get_lba_root().lba_root_addr;
+      croot->get_lba_root().lba_root_addr = paddr;
+      return update_internal_mapping_ret(
+	update_internal_mapping_ertr::ready_future_marker{},
+	old_paddr);
+    } else {
+      logger().debug(
+	"update_internal_mapping: updating lba node at depth {} to: {}->{}",
+	depth,
+	laddr,
+	paddr);
+      return get_lba_btree_extent(
+	get_context(t),
+	croot->get_lba_root().lba_depth,
+	croot->get_lba_root().lba_root_addr,
+	paddr_t()).safe_then([=, &t](LBANodeRef broot) {
+	  return broot->mutate_internal_address(
+	    get_context(t),
+	    depth,
+	    laddr,
+	    paddr);
+	});
+    }
   });
 }
 

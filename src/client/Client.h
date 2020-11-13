@@ -30,12 +30,14 @@
 #include "include/types.h"
 #include "include/unordered_map.h"
 #include "include/unordered_set.h"
+#include "include/cephfs/metrics/Types.h"
 #include "mds/mdstypes.h"
 #include "msg/Dispatcher.h"
 #include "msg/MessageRef.h"
 #include "msg/Messenger.h"
 #include "osdc/ObjectCacher.h"
 
+#include "RWRef.h"
 #include "InodeRef.h"
 #include "MetaSession.h"
 #include "UserPerm.h"
@@ -65,6 +67,7 @@ class WritebackHandler;
 
 class MDSMap;
 class Message;
+class destructive_lock_ref_t;
 
 enum {
   l_c_first = 20000,
@@ -221,6 +224,7 @@ struct dir_result_t {
   frag_t buffer_frag;
 
   vector<dentry> buffer;
+  struct dirent de;
 };
 
 class Client : public Dispatcher, public md_config_obs_t {
@@ -235,6 +239,8 @@ public:
   friend class C_Client_CacheRelease; // Asserts on client_lock
   friend class SyntheticClient;
   friend void intrusive_ptr_release(Inode *in);
+  template <typename T> friend struct RWRefState;
+  template <typename T> friend class RWRef;
 
   using Dispatcher::cct;
 
@@ -610,6 +616,7 @@ public:
   virtual void shutdown();
 
   // messaging
+  void cancel_commands(const MDSMap& newmap);
   void handle_mds_map(const MConstRef<MMDSMap>& m);
   void handle_fs_map(const MConstRef<MFSMap>& m);
   void handle_fs_map_user(const MConstRef<MFSMapUser>& m);
@@ -732,8 +739,37 @@ public:
   void flush_cap_releases();
   void tick();
 
+  void inc_dentry_nr() {
+    ++dentry_nr;
+  }
+  void dec_dentry_nr() {
+    --dentry_nr;
+  }
+  void dlease_hit() {
+    ++dlease_hits;
+  }
+  void dlease_miss() {
+    ++dlease_misses;
+  }
+  std::tuple<uint64_t, uint64_t, uint64_t> get_dlease_hit_rates() {
+    return std::make_tuple(dlease_hits, dlease_misses, dentry_nr);
+  }
+
+  void cap_hit() {
+    ++cap_hits;
+  }
+  void cap_miss() {
+    ++cap_misses;
+  }
+  std::pair<uint64_t, uint64_t> get_cap_hit_rates() {
+    return std::make_pair(cap_hits, cap_misses);
+  }
+
   xlist<Inode*> &get_dirty_list() { return dirty_list; }
 
+  /* timer_lock for 'timer' and 'tick_event' */
+  ceph::mutex timer_lock = ceph::make_mutex("Client::timer_lock");
+  Context *tick_event = nullptr;
   SafeTimer timer;
 
   std::unique_ptr<PerfCounters> logger;
@@ -745,9 +781,6 @@ protected:
   /* Flags for check_caps() */
   static const unsigned CHECK_CAPS_NODELAY = 0x1;
   static const unsigned CHECK_CAPS_SYNCHRONOUS = 0x2;
-
-
-  bool is_initialized() const { return initialized; }
 
   void check_caps(Inode *in, unsigned flags);
 
@@ -774,10 +807,8 @@ protected:
   void resend_unsafe_requests(MetaSession *s);
   void wait_unsafe_requests();
 
-  void _sync_write_commit(Inode *in);
-
   void dump_mds_requests(Formatter *f);
-  void dump_mds_sessions(Formatter *f);
+  void dump_mds_sessions(Formatter *f, bool cap_dump=false);
 
   int make_request(MetaRequest *req, const UserPerm& perms,
 		   InodeRef *ptarget = 0, bool *pcreated = 0,
@@ -838,10 +869,10 @@ protected:
    * Resolve file descriptor, or return NULL.
    */
   Fh *get_filehandle(int fd) {
-    ceph::unordered_map<int, Fh*>::iterator p = fd_map.find(fd);
-    if (p == fd_map.end())
+    auto it = fd_map.find(fd);
+    if (it == fd_map.end())
       return NULL;
-    return p->second;
+    return it->second;
   }
 
   // helpers
@@ -853,6 +884,8 @@ protected:
   // -- metadata cache stuff
 
   // decrease inode ref.  delete if dangling.
+  void _put_inode(Inode *in, int n);
+  void delay_put_inodes(bool wakeup=false);
   void put_inode(Inode *in, int n=1);
   void close_dir(Dir *dir);
 
@@ -948,7 +981,6 @@ protected:
   // global client lock
   //  - protects Client and buffer cache both!
   ceph::mutex client_lock = ceph::make_mutex("Client::client_lock");
-;
 
   std::map<snapid_t, int> ll_snap_ref;
 
@@ -969,6 +1001,124 @@ protected:
 
   client_t whoami;
 
+  /* The state migration mechanism */
+  enum _state {
+    /* For the initialize_state */
+    CLIENT_NEW, // The initial state for the initialize_state or after Client::shutdown()
+    CLIENT_INITIALIZING, // At the beginning of the Client::init()
+    CLIENT_INITIALIZED, // At the end of CLient::init()
+
+    /* For the mount_state */
+    CLIENT_UNMOUNTED, // The initial state for the mount_state or after unmounted
+    CLIENT_MOUNTING, // At the beginning of Client::mount()
+    CLIENT_MOUNTED, // At the end of Client::mount()
+    CLIENT_UNMOUNTING, // At the beginning of the Client::_unmout()
+  };
+
+  typedef enum _state state_t;
+  using RWRef_t = RWRef<state_t>;
+
+  struct mount_state_t : public RWRefState<state_t> {
+    public:
+      bool is_valid_state(state_t state) override {
+        switch (state) {
+	  case Client::CLIENT_MOUNTING:
+	  case Client::CLIENT_MOUNTED:
+	  case Client::CLIENT_UNMOUNTING:
+	  case Client::CLIENT_UNMOUNTED:
+            return true;
+          default:
+            return false;
+        }
+      }
+
+      int check_reader_state(state_t require) override {
+        if (require == Client::CLIENT_MOUNTING &&
+            (state == Client::CLIENT_MOUNTING || state == Client::CLIENT_MOUNTED))
+          return true;
+        else
+          return false;
+      }
+
+      /* The state migration check */
+      int check_writer_state(state_t require) override {
+        if (require == Client::CLIENT_MOUNTING &&
+            state == Client::CLIENT_UNMOUNTED)
+          return true;
+	else if (require == Client::CLIENT_MOUNTED &&
+            state == Client::CLIENT_MOUNTING)
+          return true;
+	else if (require == Client::CLIENT_UNMOUNTING &&
+            state == Client::CLIENT_MOUNTED)
+          return true;
+	else if (require == Client::CLIENT_UNMOUNTED &&
+            state == Client::CLIENT_UNMOUNTING)
+          return true;
+        else
+          return false;
+      }
+
+      mount_state_t(state_t state, const char *lockname, uint64_t reader_cnt=0)
+        : RWRefState (state, lockname, reader_cnt) {}
+      ~mount_state_t() {}
+  };
+
+  struct initialize_state_t : public RWRefState<state_t> {
+    public:
+      bool is_valid_state(state_t state) override {
+        switch (state) {
+	  case Client::CLIENT_NEW:
+          case Client::CLIENT_INITIALIZING:
+	  case Client::CLIENT_INITIALIZED:
+            return true;
+          default:
+            return false;
+        }
+      }
+
+      int check_reader_state(state_t require) override {
+        if (require == Client::CLIENT_INITIALIZED &&
+            state >= Client::CLIENT_INITIALIZED)
+          return true;
+        else
+          return false;
+      }
+
+      /* The state migration check */
+      int check_writer_state(state_t require) override {
+        if (require == Client::CLIENT_INITIALIZING &&
+            (state == Client::CLIENT_NEW))
+          return true;
+	else if (require == Client::CLIENT_INITIALIZED &&
+            (state == Client::CLIENT_INITIALIZING))
+          return true;
+	else if (require == Client::CLIENT_NEW &&
+            (state == Client::CLIENT_INITIALIZED))
+          return true;
+        else
+          return false;
+      }
+
+      initialize_state_t(state_t state, const char *lockname, uint64_t reader_cnt=0)
+        : RWRefState (state, lockname, reader_cnt) {}
+      ~initialize_state_t() {}
+  };
+
+  struct mount_state_t mount_state;
+  bool is_unmounting() {
+    return mount_state.check_current_state(CLIENT_UNMOUNTING);
+  }
+  bool is_mounted() {
+    return mount_state.check_current_state(CLIENT_MOUNTED);
+  }
+  bool is_mounting() {
+    return mount_state.check_current_state(CLIENT_MOUNTING);
+  }
+
+  struct initialize_state_t initialize_state;
+  bool is_initialized() {
+    return initialize_state.check_current_state(CLIENT_INITIALIZED);
+  }
 
 private:
   struct C_Readahead : public Context {
@@ -1040,6 +1190,8 @@ private:
   int _read_sync(Fh *f, uint64_t off, uint64_t len, bufferlist *bl, bool *checkeof);
   int _read_async(Fh *f, uint64_t off, uint64_t len, bufferlist *bl);
 
+  bool _dentry_valid(const Dentry *dn);
+
   // internal interface
   //   call these with client_lock held!
   int _do_lookup(Inode *dir, const string& name, int mask, InodeRef *target,
@@ -1101,8 +1253,10 @@ private:
   int64_t _read(Fh *fh, int64_t offset, uint64_t size, bufferlist *bl);
   int64_t _write(Fh *fh, int64_t offset, uint64_t size, const char *buf,
           const struct iovec *iov, int iovcnt);
-  int64_t _preadv_pwritev_locked(Fh *f, const struct iovec *iov,
-	      unsigned iovcnt, int64_t offset, bool write, bool clamp_to_int);
+  int64_t _preadv_pwritev_locked(Fh *fh, const struct iovec *iov,
+                                 unsigned iovcnt, int64_t offset,
+                                 bool write, bool clamp_to_int,
+                                 std::unique_lock<ceph::mutex> &cl);
   int _preadv_pwritev(int fd, const struct iovec *iov, unsigned iovcnt, int64_t offset, bool write);
   int _flush(Fh *fh);
   int _fsync(Fh *fh, bool syncdataonly);
@@ -1149,6 +1303,7 @@ private:
   size_t _vxattrcb_dir_rentries(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rfiles(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rsubdirs(Inode *in, char *val, size_t size);
+  size_t _vxattrcb_dir_rsnaps(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rbytes(Inode *in, char *val, size_t size);
   size_t _vxattrcb_dir_rctime(Inode *in, char *val, size_t size);
 
@@ -1157,6 +1312,9 @@ private:
 
   bool _vxattrcb_snap_btime_exists(Inode *in);
   size_t _vxattrcb_snap_btime(Inode *in, char *val, size_t size);
+
+  bool _vxattrcb_mirror_info_exists(Inode *in);
+  size_t _vxattrcb_mirror_info(Inode *in, char *val, size_t size);
 
   static const VXattr *_get_vxattrs(Inode *in);
   static const VXattr *_match_vxattr(Inode *in, const char *name);
@@ -1181,6 +1339,8 @@ private:
   int _lookup_ino(inodeno_t ino, const UserPerm& perms, Inode **inode=NULL);
   bool _ll_forget(Inode *in, uint64_t count);
 
+  void collect_and_send_metrics();
+  void collect_and_send_global_metrics();
 
   uint32_t deleg_timeout = 0;
 
@@ -1200,7 +1360,6 @@ private:
   Finisher async_ino_releasor;
   Finisher objecter_finisher;
 
-  Context *tick_event = nullptr;
   utime_t last_cap_renew;
 
   CommandHook m_command_hook;
@@ -1212,6 +1371,7 @@ private:
 
   // mds sessions
   map<mds_rank_t, MetaSession> mds_sessions;  // mds -> push seq
+  std::set<mds_rank_t> mds_ranks_closing;  // mds ranks currently tearing down sessions
   std::list<ceph::condition_variable*> waiting_for_mdsmap;
 
   // FSMap, for when using mds_command
@@ -1219,6 +1379,8 @@ private:
   std::unique_ptr<FSMap> fsmap;
   std::unique_ptr<FSMapUser> fsmap_user;
 
+  // This mutex only protects command_table
+  ceph::mutex command_lock = ceph::make_mutex("Client::command_lock");
   // MDS command state
   CommandTable<MDSCommandOp> command_table;
 
@@ -1234,10 +1396,8 @@ private:
   ceph::unordered_set<dir_result_t*> opened_dirs;
   uint64_t fd_gen = 1;
 
-  bool   initialized = false;
-  bool   mounted = false;
-  bool   unmounting = false;
-  bool   blacklisted = false;
+  bool   mount_aborted = false;
+  bool   blocklisted = false;
 
   ceph::unordered_map<vinodeno_t, Inode*> inode_map;
   ceph::unordered_map<ino_t, vinodeno_t> faked_ino_map;
@@ -1247,8 +1407,6 @@ private:
 
   int local_osd = -ENXIO;
   epoch_t local_osd_epoch = 0;
-
-  int unsafe_sync_write = 0;
 
   // mds requests
   ceph_tid_t last_tid = 0;
@@ -1281,6 +1439,17 @@ private:
   int reclaim_errno = 0;
   epoch_t reclaim_osd_epoch = 0;
   entity_addrvec_t reclaim_target_addrs;
+
+  // dentry lease metrics
+  uint64_t dentry_nr = 0;
+  uint64_t dlease_hits = 0;
+  uint64_t dlease_misses = 0;
+
+  uint64_t cap_hits = 0;
+  uint64_t cap_misses = 0;
+
+  ceph::spinlock delay_i_lock;
+  std::map<Inode*,int> delay_i_release;
 };
 
 /**

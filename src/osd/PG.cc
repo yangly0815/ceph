@@ -213,6 +213,7 @@ PG::PG(OSDService *o, OSDMapRef curmap,
   pg_stats_publish_valid(false),
   finish_sync_event(NULL),
   scrub_after_recovery(false),
+  save_req_scrub(false),
   active_pushes(0),
   recovery_state(
     o->cct,
@@ -365,6 +366,7 @@ void PG::clear_primary_state()
 
   scrubber.reserved_peers.clear();
   scrub_after_recovery = false;
+  save_req_scrub = false;
 
   agent_clear();
 }
@@ -375,7 +377,7 @@ PG::Scrubber::Scrubber()
    active(false),
    shallow_errors(0), deep_errors(0), fixed(0),
    must_scrub(false), must_deep_scrub(false), must_repair(false),
-   need_auto(false), time_for_deep(false),
+   need_auto(false), req_scrub(false), time_for_deep(false),
    auto_repair(false),
    check_repair(false),
    deep_scrub_on_error(false),
@@ -529,6 +531,8 @@ void PG::_finish_recovery(Context *c)
       scrub_after_recovery = false;
       scrubber.must_deep_scrub = true;
       scrubber.check_repair = true;
+      // We remember whether req_scrub was set when scrub_after_recovery set to true
+      scrubber.req_scrub = save_req_scrub;
       queue_scrub();
     }
   } else {
@@ -795,7 +799,7 @@ void PG::set_probe_targets(const set<pg_shard_t> &probe_set)
 }
 
 void PG::send_cluster_message(
-  int target, Message *m,
+  int target, MessageRef m,
   epoch_t epoch, bool share_map_update=false)
 {
   ConnectionRef con = osd->get_con_osd_cluster(
@@ -1564,6 +1568,7 @@ void PG::scrub_requested(bool deep, bool repair, bool need_auto)
     scrubber.must_repair = repair;
     // User might intervene, so clear this
     scrubber.need_auto = false;
+    scrubber.req_scrub = true;
   }
   reg_next_scrub();
 }
@@ -1620,15 +1625,15 @@ void PG::schedule_event_after(
 
 void PG::request_local_background_io_reservation(
   unsigned priority,
-  PGPeeringEventRef on_grant,
-  PGPeeringEventRef on_preempt) {
+  PGPeeringEventURef on_grant,
+  PGPeeringEventURef on_preempt) {
   osd->local_reserver.request_reservation(
     pg_id,
     on_grant ? new QueuePeeringEvt(
-      this, on_grant) : nullptr,
+      this, std::move(on_grant)) : nullptr,
     priority,
     on_preempt ? new QueuePeeringEvt(
-      this, on_preempt) : nullptr);
+      this, std::move(on_preempt)) : nullptr);
 }
 
 void PG::update_local_background_io_priority(
@@ -1645,15 +1650,15 @@ void PG::cancel_local_background_io_reservation() {
 
 void PG::request_remote_recovery_reservation(
   unsigned priority,
-  PGPeeringEventRef on_grant,
-  PGPeeringEventRef on_preempt) {
+  PGPeeringEventURef on_grant,
+  PGPeeringEventURef on_preempt) {
   osd->remote_reserver.request_reservation(
     pg_id,
     on_grant ? new QueuePeeringEvt(
-      this, on_grant) : nullptr,
+      this, std::move(on_grant)) : nullptr,
     priority,
     on_preempt ? new QueuePeeringEvt(
-      this, on_preempt) : nullptr);
+      this, std::move(on_preempt)) : nullptr);
 }
 
 void PG::cancel_remote_recovery_reservation() {
@@ -2566,6 +2571,12 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
   chunky_scrub(handle);
 }
 
+void PG::abort_scrub()
+{
+  scrub_clear_state();
+  scrub_unreserve_replicas();
+}
+
 /*
  * Chunky scrub scrubs objects one chunk at a time with writes blocked for that
  * chunk.
@@ -2646,12 +2657,29 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
  */
 void PG::chunky_scrub(ThreadPool::TPHandle &handle)
 {
+  // Since repair is only by request and we need to scrub afterward
+  // treat the same as req_scrub.
+  if (!scrubber.req_scrub) {
+    if (state_test(PG_STATE_DEEP_SCRUB)) {
+      if (get_osdmap()->test_flag(CEPH_OSDMAP_NODEEP_SCRUB) ||
+	  pool.info.has_flag(pg_pool_t::FLAG_NODEEP_SCRUB)) {
+           dout(10) << "nodeep_scrub set, aborting" << dendl;
+	abort_scrub();
+        return;
+      }
+    } else if (state_test(PG_STATE_SCRUBBING)) {
+      if (get_osdmap()->test_flag(CEPH_OSDMAP_NOSCRUB) || pool.info.has_flag(pg_pool_t::FLAG_NOSCRUB)) {
+         dout(10) << "noscrub set, aborting" << dendl;
+	 abort_scrub();
+         return;
+      }
+    }
+  }
   // check for map changes
   if (scrubber.is_chunky_scrub_active()) {
     if (scrubber.epoch_start != info.history.same_interval_since) {
-      dout(10) << "scrub  pg changed, aborting" << dendl;
-      scrub_clear_state();
-      scrub_unreserve_replicas();
+      dout(10) << "scrub pg changed, aborting" << dendl;
+      abort_scrub();
       return;
     }
   }
@@ -3036,6 +3064,7 @@ void PG::scrub_clear_state(bool has_error)
   state_clear(PG_STATE_DEEP_SCRUB);
   publish_stats_to_osd();
 
+  scrubber.req_scrub = false;
   // local -> nothing.
   if (scrubber.local_reserved) {
     osd->dec_scrubs_local();
@@ -3075,8 +3104,8 @@ void PG::scrub_compare_maps()
   set<hobject_t> master_set;
 
   // Construct master set
-  for (const auto map : maps) {
-    for (const auto i : map.second->objects) {
+  for (const auto& map : maps) {
+    for (const auto& i : map.second->objects) {
       master_set.insert(i.first);
     }
   }
@@ -3268,7 +3297,8 @@ void PG::scrub_finish()
     } else if (has_error) {
       // Deep scrub in order to get corrected error counts
       scrub_after_recovery = true;
-      dout(20) << __func__ << " Set scrub_after_recovery" << dendl;
+      save_req_scrub = scrubber.req_scrub;
+      dout(20) << __func__ << " Set scrub_after_recovery, req_scrub=" << save_req_scrub << dendl;
     } else if (scrubber.shallow_errors || scrubber.deep_errors) {
       // We have errors but nothing can be fixed, so there is no repair
       // possible.
@@ -3414,6 +3444,8 @@ ostream& operator<<(ostream& out, const PG& pg)
     out << " TIME_FOR_DEEP";
   if (pg.scrubber.need_auto)
     out << " NEED_AUTO";
+  if (pg.scrubber.req_scrub)
+    out << " REQ_SCRUB";
 
   if (pg.recovery_ops_active)
     out << " rops=" << pg.recovery_ops_active;
@@ -3741,12 +3773,54 @@ void PG::handle_initialize(PeeringCtx &rctx)
   recovery_state.handle_event(evt, &rctx);
 }
 
+void PG::Scrubber::dump(Formatter *f)
+{
+  f->open_object_section("scrubber");
+  f->dump_stream("epoch_start") << epoch_start;
+  f->dump_bool("active", active);
+  if (active) {
+    f->dump_string("state", state_string(state));
+    f->dump_stream("start") << start;
+    f->dump_stream("end") << end;
+    f->dump_stream("max_end") << max_end;
+    f->dump_stream("subset_last_update") << subset_last_update;
+    f->dump_bool("deep", deep);
+    f->dump_bool("must_scrub", must_scrub);
+    f->dump_bool("must_deep_scrub", must_deep_scrub);
+    f->dump_bool("must_repair", must_repair);
+    f->dump_bool("need_auto", need_auto);
+    f->dump_bool("req_scrub", req_scrub);
+    f->dump_bool("time_for_deep", time_for_deep);
+    f->dump_bool("auto_repair", auto_repair);
+    f->dump_bool("check_repair", check_repair);
+    f->dump_bool("deep_scrub_on_error", deep_scrub_on_error);
+    f->dump_stream("scrub_reg_stamp") << scrub_reg_stamp; //utime_t
+    f->dump_stream("waiting_on_whom") << waiting_on_whom; //set<pg_shard_t>
+    f->dump_unsigned("priority", priority);
+    f->dump_int("shallow_errors", shallow_errors);
+    f->dump_int("deep_errors", deep_errors);
+    f->dump_int("fixed", fixed);
+    {
+      f->open_array_section("waiting_on_whom");
+      for (set<pg_shard_t>::iterator p = waiting_on_whom.begin();
+	   p != waiting_on_whom.end();
+	   ++p) {
+	f->dump_stream("shard") << *p;
+      }
+      f->close_section();
+    }
+  }
+  f->close_section();
+}
+
 void PG::handle_query_state(Formatter *f)
 {
   dout(10) << "handle_query_state" << dendl;
   PeeringState::QueryState q(f);
   recovery_state.handle_event(q, 0);
 
+  // This code has moved to after the close of recovery_state array.
+  // I don't think that scrub is a recovery state
   if (is_primary() && is_active()) {
     f->open_object_section("scrub");
     f->dump_stream("scrubber.epoch_start") << scrubber.epoch_start;
@@ -3766,6 +3840,7 @@ void PG::handle_query_state(Formatter *f)
       }
       f->close_section();
     }
+    f->dump_string("comment", "DEPRECATED - may be removed in the next release");
     f->close_section();
   }
 }
@@ -3924,16 +3999,6 @@ int PG::pg_stat_adjust(osd_stat_t *ns)
     return 1;
   }
   return 0;
-}
-
-ostream& operator<<(ostream& out, const PG::BackfillInterval& bi)
-{
-  out << "BackfillInfo(" << bi.begin << "-" << bi.end
-      << " " << bi.objects.size() << " objects";
-  if (!bi.objects.empty())
-    out << " " << bi.objects;
-  out << ")";
-  return out;
 }
 
 void PG::dump_pgstate_history(Formatter *f)

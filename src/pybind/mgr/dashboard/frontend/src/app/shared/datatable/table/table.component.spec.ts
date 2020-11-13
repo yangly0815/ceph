@@ -3,15 +3,16 @@ import { FormsModule } from '@angular/forms';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { NgbDropdownModule } from '@ng-bootstrap/ng-bootstrap';
+import { NgbDropdownModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap';
 import { NgxDatatableModule } from '@swimlane/ngx-datatable';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { configureTestBed } from '../../../../testing/unit-test-helper';
-import { ComponentsModule } from '../../components/components.module';
-import { CdTableColumnFilter } from '../../models/cd-table-column-filter';
-import { CdTableFetchDataContext } from '../../models/cd-table-fetch-data-context';
-import { PipesModule } from '../../pipes/pipes.module';
+import { ComponentsModule } from '~/app/shared/components/components.module';
+import { CdTableColumnFilter } from '~/app/shared/models/cd-table-column-filter';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { PipesModule } from '~/app/shared/pipes/pipes.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { TableComponent } from './table.component';
 
 describe('TableComponent', () => {
@@ -43,7 +44,8 @@ describe('TableComponent', () => {
       ComponentsModule,
       RouterTestingModule,
       NgbDropdownModule,
-      PipesModule
+      PipesModule,
+      NgbTooltipModule
     ]
   });
 
@@ -102,6 +104,16 @@ describe('TableComponent', () => {
       expect(eventName).toBe('mouseenter');
       expect(wasCalled).toBe(true);
       done();
+    });
+    component.ngOnInit();
+  });
+
+  it('should call updateSelection on init', () => {
+    component.updateSelection.subscribe((selection: CdTableSelection) => {
+      expect(selection.hasSelection).toBeFalsy();
+      expect(selection.hasSingleSelection).toBeFalsy();
+      expect(selection.hasMultiSelection).toBeFalsy();
+      expect(selection.selected.length).toBe(0);
     });
     component.ngOnInit();
   });
@@ -520,7 +532,7 @@ describe('TableComponent', () => {
       component.data = createFakeData(5);
       component.fetchData.subscribe((context: any) => {
         context.error();
-        expect(component.loadingError).toBeTruthy();
+        expect(component.status.type).toBe('danger');
         expect(component.data.length).toBe(0);
         expect(component.loadingIndicator).toBeFalsy();
         expect(component['updating']).toBeFalsy();
@@ -534,7 +546,7 @@ describe('TableComponent', () => {
         context.errorConfig.resetData = false;
         context.errorConfig.displayError = false;
         context.error();
-        expect(component.loadingError).toBeFalsy();
+        expect(component.status.type).toBe('danger');
         expect(component.data.length).toBe(10);
         expect(component.loadingIndicator).toBeFalsy();
         expect(component['updating']).toBeFalsy();
@@ -674,7 +686,7 @@ describe('TableComponent', () => {
     });
 
     it('should open the table details and close other expanded rows', () => {
-      component.toggleExpandRow(component.expanded, false);
+      component.toggleExpandRow(component.expanded, false, new Event('click'));
       expect(component.expanded).toEqual({ a: 1, b: 10, c: true });
       expect(component.table.rowDetail.collapseAllRows).toHaveBeenCalled();
       expect(component.setExpandedRow.emit).toHaveBeenCalledWith(component.expanded);
@@ -682,10 +694,25 @@ describe('TableComponent', () => {
     });
 
     it('should close the current table details expansion', () => {
-      component.toggleExpandRow(component.expanded, true);
+      component.toggleExpandRow(component.expanded, true, new Event('click'));
       expect(component.expanded).toBeUndefined();
       expect(component.setExpandedRow.emit).toHaveBeenCalledWith(undefined);
       expect(component.table.rowDetail.toggleExpandRow).toHaveBeenCalled();
+    });
+
+    it('should not select the row when the row is expanded', () => {
+      expect(component.selection.selected).toEqual([]);
+      component.toggleExpandRow(component.data[1], false, new Event('click'));
+      expect(component.selection.selected).toEqual([]);
+    });
+
+    it('should not change selection when expanding different row', () => {
+      expect(component.selection.selected).toEqual([]);
+      expect(component.expanded).toEqual(component.data[1]);
+      component.selection.selected = [component.data[2]];
+      component.toggleExpandRow(component.data[3], false, new Event('click'));
+      expect(component.selection.selected).toEqual([component.data[2]]);
+      expect(component.expanded).toEqual(component.data[3]);
     });
   });
 });

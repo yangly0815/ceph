@@ -1,28 +1,27 @@
 import { Component, OnDestroy, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
 import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Subscription } from 'rxjs';
 
-import { NfsService } from '../../../shared/api/nfs.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { TableComponent } from '../../../shared/datatable/table/table.component';
-import { CellTemplate } from '../../../shared/enum/cell-template.enum';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { Permission } from '../../../shared/models/permissions';
-import { Task } from '../../../shared/models/task';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { NfsService } from '~/app/shared/api/nfs.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { ViewCacheStatus } from '~/app/shared/enum/view-cache-status.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { Permission } from '~/app/shared/models/permissions';
+import { Task } from '~/app/shared/models/task';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 @Component({
   selector: 'cd-nfs-list',
@@ -62,7 +61,6 @@ export class NfsListComponent extends ListWithDetails implements OnInit, OnDestr
 
   constructor(
     private authStorageService: AuthStorageService,
-    private i18n: I18n,
     private modalService: ModalService,
     private nfsService: NfsService,
     private taskListService: TaskListService,
@@ -105,34 +103,34 @@ export class NfsListComponent extends ListWithDetails implements OnInit, OnDestr
   ngOnInit() {
     this.columns = [
       {
-        name: this.i18n('Path'),
+        name: $localize`Path`,
         prop: 'path',
         flexGrow: 2,
         cellTransformation: CellTemplate.executing
       },
       {
-        name: this.i18n('Pseudo'),
+        name: $localize`Pseudo`,
         prop: 'pseudo',
         flexGrow: 2
       },
       {
-        name: this.i18n('Cluster'),
+        name: $localize`Cluster`,
         prop: 'cluster_id',
         flexGrow: 2
       },
       {
-        name: this.i18n('Daemons'),
+        name: $localize`Daemons`,
         prop: 'daemons',
         flexGrow: 2
       },
       {
-        name: this.i18n('Storage Backend'),
+        name: $localize`Storage Backend`,
         prop: 'fsal',
         flexGrow: 2,
         cellTemplate: this.nfsFsal
       },
       {
-        name: this.i18n('Access Type'),
+        name: $localize`Access Type`,
         prop: 'access_type',
         flexGrow: 2
       }
@@ -209,7 +207,7 @@ export class NfsListComponent extends ListWithDetails implements OnInit, OnDestr
     const export_id = this.selection.first().export_id;
 
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
-      itemDescription: this.i18n('NFS export'),
+      itemDescription: $localize`NFS export`,
       itemNames: [`${cluster_id}:${export_id}`],
       submitActionObservable: () =>
         this.taskWrapper.wrapTaskAroundCall({

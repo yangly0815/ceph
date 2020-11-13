@@ -74,20 +74,47 @@ struct TestBlock : crimson::os::seastore::LogicalCachedExtent {
     set_contents(c, 0, get_length());
   }
 
-  int checksum() {
-    return ceph_crc32c(
-      1,
-      (const unsigned char *)get_bptr().c_str(),
-      get_length());
-  }
-
   test_extent_desc_t get_desc() {
-    return { get_length(), get_crc32c(1) };
+    return { get_length(), get_crc32c() };
   }
 
   void apply_delta(const ceph::bufferlist &bl) final;
 };
 using TestBlockRef = TCachedExtentRef<TestBlock>;
+
+struct TestBlockPhysical : crimson::os::seastore::CachedExtent{
+  constexpr static segment_off_t SIZE = 4<<10;
+  using Ref = TCachedExtentRef<TestBlockPhysical>;
+
+  std::vector<test_block_delta_t> delta = {};
+
+  TestBlockPhysical(ceph::bufferptr &&ptr)
+    : CachedExtent(std::move(ptr)) {}
+  TestBlockPhysical(const TestBlock &other)
+    : CachedExtent(other) {}
+
+  CachedExtentRef duplicate_for_write() final {
+    return CachedExtentRef(new TestBlockPhysical(*this));
+  };
+
+  static constexpr extent_types_t TYPE = extent_types_t::TEST_BLOCK_PHYSICAL;
+  extent_types_t get_type() const final {
+    return TYPE;
+  }
+
+  void set_contents(char c, uint16_t offset, uint16_t len) {
+    ::memset(get_bptr().c_str() + offset, c, len);
+  }
+
+  void set_contents(char c) {
+    set_contents(c, 0, get_length());
+  }
+
+  ceph::bufferlist get_delta() final { return ceph::bufferlist(); }
+
+  void apply_delta_and_adjust_crc(paddr_t, const ceph::bufferlist &bl) final {}
+};
+using TestBlockPhysicalRef = TCachedExtentRef<TestBlockPhysical>;
 
 struct test_block_mutator_t {
   std::uniform_int_distribution<int8_t>
@@ -99,20 +126,19 @@ struct test_block_mutator_t {
   offset_distribution = std::uniform_int_distribution<uint16_t>(
     0, TestBlock::SIZE - 1);
 
-  std::default_random_engine generator = std::default_random_engine(0);
-
   std::uniform_int_distribution<uint16_t> length_distribution(uint16_t offset) {
     return std::uniform_int_distribution<uint16_t>(
       0, TestBlock::SIZE - offset - 1);
   }
 
 
-  void mutate(TestBlock &block) {
-    auto offset = offset_distribution(generator);
+  template <typename generator_t>
+  void mutate(TestBlock &block, generator_t &gen) {
+    auto offset = offset_distribution(gen);
     block.set_contents(
-      contents_distribution(generator),
+      contents_distribution(gen),
       offset,
-      length_distribution(offset)(generator));
+      length_distribution(offset)(gen));
   }
 };
 

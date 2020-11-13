@@ -8,11 +8,11 @@ import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of as observableOf } from 'rxjs';
 
-import { configureTestBed, i18nProviders } from '../../../../../testing/unit-test-helper';
-import { ConfigurationService } from '../../../../shared/api/configuration.service';
-import { NotificationType } from '../../../../shared/enum/notification-type.enum';
-import { NotificationService } from '../../../../shared/services/notification.service';
-import { SharedModule } from '../../../../shared/shared.module';
+import { ConfigurationService } from '~/app/shared/api/configuration.service';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { OsdPgScrubModalComponent } from './osd-pg-scrub-modal.component';
 
 describe('OsdPgScrubModalComponent', () => {
@@ -29,7 +29,7 @@ describe('OsdPgScrubModalComponent', () => {
       ToastrModule.forRoot()
     ],
     declarations: [OsdPgScrubModalComponent],
-    providers: [NgbActiveModal, i18nProviders]
+    providers: [NgbActiveModal]
   });
 
   beforeEach(() => {

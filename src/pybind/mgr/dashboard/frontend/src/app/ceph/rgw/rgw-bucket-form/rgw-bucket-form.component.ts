@@ -2,21 +2,20 @@ import { Component, OnInit } from '@angular/core';
 import { AbstractControl, AsyncValidatorFn, ValidationErrors, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { forkJoin } from 'rxjs';
 
-import { RgwBucketService } from '../../../shared/api/rgw-bucket.service';
-import { RgwSiteService } from '../../../shared/api/rgw-site.service';
-import { RgwUserService } from '../../../shared/api/rgw-user.service';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdForm } from '../../../shared/forms/cd-form';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { NotificationService } from '../../../shared/services/notification.service';
+import { RgwBucketService } from '~/app/shared/api/rgw-bucket.service';
+import { RgwSiteService } from '~/app/shared/api/rgw-site.service';
+import { RgwUserService } from '~/app/shared/api/rgw-user.service';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { NotificationService } from '~/app/shared/services/notification.service';
 import { RgwBucketMfaDelete } from '../models/rgw-bucket-mfa-delete';
 import { RgwBucketVersioning } from '../models/rgw-bucket-versioning';
 
@@ -52,13 +51,12 @@ export class RgwBucketFormComponent extends CdForm implements OnInit {
     private rgwSiteService: RgwSiteService,
     private rgwUserService: RgwUserService,
     private notificationService: NotificationService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
     this.editing = this.router.url.startsWith(`/rgw/bucket/${URLVerbs.EDIT}`);
     this.action = this.editing ? this.actionLabels.EDIT : this.actionLabels.CREATE;
-    this.resource = this.i18n('bucket');
+    this.resource = $localize`bucket`;
     this.createForm();
   }
 
@@ -114,7 +112,7 @@ export class RgwBucketFormComponent extends CdForm implements OnInit {
           const placementTargets = data['getPlacementTargets'];
           this.zonegroup = placementTargets['zonegroup'];
           _.forEach(placementTargets['placement_targets'], (placementTarget) => {
-            placementTarget['description'] = `${placementTarget['name']} (${this.i18n('pool')}: ${
+            placementTarget['description'] = `${placementTarget['name']} (${$localize`pool`}: ${
               placementTarget['data_pool']
             })`;
             this.placementTargets.push(placementTarget);
@@ -189,7 +187,7 @@ export class RgwBucketFormComponent extends CdForm implements OnInit {
           () => {
             this.notificationService.show(
               NotificationType.success,
-              this.i18n(`Updated Object Gateway bucket '{{bid}}'.`, values)
+              $localize`Updated Object Gateway bucket '${values.bid}'.`
             );
             this.goToListView();
           },
@@ -215,7 +213,7 @@ export class RgwBucketFormComponent extends CdForm implements OnInit {
           () => {
             this.notificationService.show(
               NotificationType.success,
-              this.i18n(`Created Object Gateway bucket '{{bid}}'`, values)
+              $localize`Created Object Gateway bucket '${values.bid}'`
             );
             this.goToListView();
           },

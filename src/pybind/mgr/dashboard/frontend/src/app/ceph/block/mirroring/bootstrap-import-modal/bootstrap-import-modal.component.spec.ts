@@ -7,14 +7,10 @@ import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import {
-  configureTestBed,
-  FormHelper,
-  i18nProviders
-} from '../../../../../testing/unit-test-helper';
-import { RbdMirroringService } from '../../../../shared/api/rbd-mirroring.service';
-import { NotificationService } from '../../../../shared/services/notification.service';
-import { SharedModule } from '../../../../shared/shared.module';
+import { RbdMirroringService } from '~/app/shared/api/rbd-mirroring.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { BootstrapImportModalComponent } from './bootstrap-import-modal.component';
 
 describe('BootstrapImportModalComponent', () => {
@@ -33,7 +29,7 @@ describe('BootstrapImportModalComponent', () => {
       SharedModule,
       ToastrModule.forRoot()
     ],
-    providers: [NgbActiveModal, i18nProviders]
+    providers: [NgbActiveModal]
   });
 
   beforeEach(() => {

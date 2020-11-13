@@ -6,16 +6,11 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { ToastrModule } from 'ngx-toastr';
 
-import { ActivatedRouteStub } from '../../../../testing/activated-route-stub';
-import {
-  configureTestBed,
-  FormHelper,
-  i18nProviders,
-  IscsiHelper
-} from '../../../../testing/unit-test-helper';
-import { LoadingPanelComponent } from '../../../shared/components/loading-panel/loading-panel.component';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { SharedModule } from '../../../shared/shared.module';
+import { LoadingPanelComponent } from '~/app/shared/components/loading-panel/loading-panel.component';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { SharedModule } from '~/app/shared/shared.module';
+import { ActivatedRouteStub } from '~/testing/activated-route-stub';
+import { configureTestBed, FormHelper, IscsiHelper } from '~/testing/unit-test-helper';
 import { IscsiTargetFormComponent } from './iscsi-target-form.component';
 
 describe('IscsiTargetFormComponent', () => {
@@ -153,7 +148,6 @@ describe('IscsiTargetFormComponent', () => {
         ToastrModule.forRoot()
       ],
       providers: [
-        i18nProviders,
         {
           provide: ActivatedRoute,
           useValue: new ActivatedRouteStub({ target_iqn: undefined })

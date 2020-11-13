@@ -542,10 +542,8 @@ public:
 
 class RGWRESTOp : public RGWOp {
 protected:
-  int http_ret;
   RGWRESTFlusher flusher;
 public:
-  RGWRESTOp() : http_ret(0) {}
   void init(rgw::sal::RGWRadosStore *store, struct req_state *s,
             RGWHandler *dialect_handler) override {
     RGWOp::init(store, s, dialect_handler);
@@ -639,6 +637,7 @@ public:
   }
 
   virtual RGWHandler_REST* get_handler(
+    rgw::sal::RGWRadosStore *store,
     struct req_state* const s,
     const rgw::auth::StrategyRegistry& auth_registry,
     const std::string& frontend_prefix

@@ -23,23 +23,6 @@
 
 namespace crimson::os::seastore {
 
-class LBAPin;
-using LBAPinRef = std::unique_ptr<LBAPin>;
-class LBAPin {
-public:
-  virtual extent_len_t get_length() const = 0;
-  virtual paddr_t get_paddr() const = 0;
-  virtual laddr_t get_laddr() const = 0;
-  virtual LBAPinRef duplicate() const = 0;
-
-  virtual ~LBAPin() {}
-};
-std::ostream &operator<<(std::ostream &out, const LBAPin &rhs);
-
-using lba_pin_list_t = std::list<LBAPinRef>;
-
-std::ostream &operator<<(std::ostream &out, const lba_pin_list_t &rhs);
-
 /**
  * Abstract interface for managing the logical to physical mapping
  */
@@ -105,10 +88,15 @@ public:
     Transaction &t,
     laddr_t off, extent_len_t len, paddr_t addr) = 0;
 
+
+  struct ref_update_result_t {
+    unsigned refcount = 0;
+    paddr_t addr;
+  };
   using ref_ertr = crimson::errorator<
     crimson::ct_error::enoent,
     crimson::ct_error::input_output_error>;
-  using ref_ret = ref_ertr::future<unsigned>;
+  using ref_ret = ref_ertr::future<ref_update_result_t>;
 
   /**
    * Decrements ref count on extent
@@ -128,14 +116,82 @@ public:
     Transaction &t,
     laddr_t addr) = 0;
 
-  // TODO: probably unused, removed
-  using submit_lba_transaction_ertr = crimson::errorator<
+  using complete_transaction_ertr = crimson::errorator<
     crimson::ct_error::input_output_error>;
-  using submit_lba_transaction_ret = submit_lba_transaction_ertr::future<>;
-  virtual submit_lba_transaction_ret submit_lba_transaction(
+  using complete_transaction_ret = complete_transaction_ertr::future<>;
+  virtual complete_transaction_ret complete_transaction(
     Transaction &t) = 0;
 
-  virtual TransactionRef create_transaction() = 0;
+  /**
+   * Should be called after replay on each cached extent.
+   * Implementation must initialize the LBAPin on any
+   * LogicalCachedExtent's and may also read in any dependent
+   * structures, etc.
+   */
+  using init_cached_extent_ertr = crimson::errorator<
+    crimson::ct_error::input_output_error>;
+  using init_cached_extent_ret = init_cached_extent_ertr::future<>;
+  virtual init_cached_extent_ret init_cached_extent(
+    Transaction &t,
+    CachedExtentRef e) = 0;
+
+  /**
+   * Calls f for each mapping in [begin, end)
+   */
+  using scan_mappings_ertr = SegmentManager::read_ertr;
+  using scan_mappings_ret = scan_mappings_ertr::future<>;
+  using scan_mappings_func_t = std::function<
+    void(laddr_t, paddr_t, extent_len_t)>;
+  virtual scan_mappings_ret scan_mappings(
+    Transaction &t,
+    laddr_t begin,
+    laddr_t end,
+    scan_mappings_func_t &&f) = 0;
+
+  /**
+   * Calls f for each mapped space usage in [begin, end)
+   */
+  using scan_mapped_space_ertr = SegmentManager::read_ertr;
+  using scan_mapped_space_ret = scan_mapped_space_ertr::future<>;
+  using scan_mapped_space_func_t = std::function<
+    void(paddr_t, extent_len_t)>;
+  virtual scan_mapped_space_ret scan_mapped_space(
+    Transaction &t,
+    scan_mapped_space_func_t &&f) = 0;
+
+  /**
+   * rewrite_extent
+   *
+   * rewrite extent into passed transaction
+   */
+  using rewrite_extent_ertr = crimson::errorator<
+    crimson::ct_error::input_output_error>;
+  using rewrite_extent_ret = rewrite_extent_ertr::future<>;
+  virtual rewrite_extent_ret rewrite_extent(
+    Transaction &t,
+    CachedExtentRef extent) = 0;
+
+  /**
+   * get_physical_extent_if_live
+   *
+   * Returns extent at addr/laddr if still live (if laddr
+   * still points at addr).  Extent must be an internal, physical
+   * extent.
+   *
+   * Returns a null CachedExtentRef if extent is not live.
+   */
+  using get_physical_extent_if_live_ertr = crimson::errorator<
+    crimson::ct_error::input_output_error>;
+  using get_physical_extent_if_live_ret =
+    get_physical_extent_if_live_ertr::future<CachedExtentRef>;
+  virtual get_physical_extent_if_live_ret get_physical_extent_if_live(
+    Transaction &t,
+    extent_types_t type,
+    paddr_t addr,
+    laddr_t laddr,
+    segment_off_t len) = 0;
+
+  virtual void add_pin(LBAPin &pin) = 0;
 
   virtual ~LBAManager() {}
 };

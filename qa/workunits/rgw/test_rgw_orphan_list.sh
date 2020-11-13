@@ -17,6 +17,13 @@ awscli_dir=${HOME}/awscli_temp
 export PATH=${PATH}:${awscli_dir}
 
 rgw_host=$(hostname --fqdn)
+if echo "$rgw_host" | grep -q '\.' ; then
+    :
+else
+    host_domain=".front.sepia.ceph.com"
+    echo "WARNING: rgw hostname -- $rgw_host -- does not appear to be fully qualified; PUNTING and appending $host_domain"
+    rgw_host="${rgw_host}${host_domain}"
+fi
 rgw_port=80
 
 echo "Fully Qualified Domain Name: $rgw_host"
@@ -49,9 +56,8 @@ uninstall_awscli() {
     cd "$here"
 }
 
-sudo dnf install -y s3cmd
-
-sudo yum install python3-setuptools
+sudo yum -y install s3cmd
+sudo yum -y install python3-setuptools
 sudo yum -y install python3-pip
 sudo pip3 install --upgrade setuptools
 sudo pip3 install python-swiftclient

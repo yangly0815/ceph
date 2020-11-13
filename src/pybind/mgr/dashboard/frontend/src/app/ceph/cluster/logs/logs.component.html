@@ -3,13 +3,27 @@
 
   <ul ngbNav
       #nav="ngbNav"
-      class="nav-tabs">
-    <li ngbNavItem>
+      class="nav-tabs"
+      cdStatefulTab="logs">
+    <li ngbNavItem="cluster-logs">
       <a ngbNavLink
          i18n>Cluster Logs</a>
       <ng-template ngbNavContent>
         <div class="card bg-light mb-3"
              *ngIf="clog">
+          <div class="btn-group"
+               role="group"
+               (click)="logToText(clog)"
+               *ngIf="clog.length">
+            <cd-download-button [objectItem]="clog"
+                                [textItem]="logText"
+                                fileName="cluster_log">
+            </cd-download-button>
+            <button type="button"
+                    class="btn btn-light"
+                    [cdCopy2ClipboardButton]="logText"
+                    [byId]="false"></button>
+          </div>
           <div class="card-body">
             <p *ngFor="let line of clog">
               <span class="timestamp">{{ line.stamp | cdDate }}</span>
@@ -17,18 +31,30 @@
               <span class="message">{{ line.message }}</span>
             </p>
 
-            <span *ngIf="contentData.clog.length === 0"
-                  i18n>No entries found</span>
+            <ng-container *ngIf="clog.length != 0 else noEntriesTpl"></ng-container>
           </div>
         </div>
       </ng-template>
     </li>
-    <li ngbNavItem>
+    <li ngbNavItem="audit-logs">
       <a ngbNavLink
          i18n>Audit Logs</a>
       <ng-template ngbNavContent>
         <div class="card bg-light mb-3"
              *ngIf="audit_log">
+          <div class="btn-group"
+               role="group"
+               (click)="logToText(audit_log)"
+               *ngIf="audit_log.length">
+            <cd-download-button [objectItem]="audit_log"
+                                [textItem]="logText"
+                                fileName="audit_log">
+            </cd-download-button>
+            <button type="button"
+                    class="btn btn-light"
+                    [cdCopy2ClipboardButton]="logText"
+                    [byId]="false"></button>
+          </div>
           <div class="card-body">
             <p *ngFor="let line of audit_log">
               <span class="timestamp">{{ line.stamp | cdDate }}</span>
@@ -36,8 +62,7 @@
               <span class="message">{{ line.message }}</span>
             </p>
 
-            <span *ngIf="contentData.audit_log.length === 0"
-                  i18n>No entries found</span>
+            <ng-container *ngIf="audit_log.length != 0 else noEntriesTpl"></ng-container>
           </div>
         </div>
       </ng-template>
@@ -50,18 +75,19 @@
 <ng-template #logFiltersTpl>
   <div class="form-inline">
     <div class="form-group">
-      <label class="col-form-label"
+      <label for="logs-priority"
              i18n>Priority:</label>
-      <select class="form-control custom-select"
+      <select id="logs-priority"
+              class="form-control custom-select"
               [(ngModel)]="priority"
               (ngModelChange)="filterLogs()">
-        <option *ngFor="let prio of prioritys"
+        <option *ngFor="let prio of priorities"
                 [value]="prio.value">{{ prio.name }}</option>
       </select>
     </div>
 
     <div class="form-group">
-      <label class="col-form-label"
+      <label for="logs-keyword"
              i18n>Keyword:</label>
       <div class="input-group">
         <div class="input-group-prepend">
@@ -71,6 +97,7 @@
         </div>
 
         <input class="form-control"
+               id="logs-keyword"
                type="text"
                [(ngModel)]="search"
                (keyup)="filterLogs()">
@@ -86,15 +113,16 @@
     </div>
 
     <div class="form-group">
-      <label class="col-form-label"
+      <label for="logs-date"
              i18n>Date:</label>
       <div class="input-group">
-        <input type="text"
-               class="form-control"
-               i18n-placeholder
-               placeholder="Datepicker"
-               [bsConfig]="bsConfig"
-               bsDatepicker
+        <input class="form-control"
+               id="logs-date"
+               placeholder="YYYY-MM-DD"
+               ngbDatepicker
+               [maxDate]="maxDate"
+               #d="ngbDatepicker"
+               (click)="d.open()"
                [(ngModel)]="selectedDate"
                (ngModelChange)="filterLogs()">
         <span class="input-group-append">
@@ -108,23 +136,24 @@
     </div>
 
     <div class="form-group">
-      <label class="col-form-label"
-             i18n>Time range:</label>
-      <div class="d-inline-flex">
-        <timepicker [showMeridian]="false"
-                    [showSpinners]="false"
-                    [minuteStep]="1"
-                    [(ngModel)]="startTime"
-                    (ngModelChange)="filterLogs()">
-        </timepicker>
-        <span class="middle">&nbsp;&mdash;&nbsp;</span>
-        <timepicker [showMeridian]="false"
-                    [showSpinners]="false"
-                    [minuteStep]="1"
-                    [(ngModel)]="endTime"
-                    (ngModelChange)="filterLogs()">
-        </timepicker>
-      </div>
+      <label i18n>Time range:</label>
+      <ngb-timepicker [spinners]="false"
+                      [(ngModel)]="startTime"
+                      (ngModelChange)="filterLogs()"></ngb-timepicker>
+
+      <span>&nbsp;&mdash;&nbsp;</span>
+
+      <ngb-timepicker [spinners]="false"
+                      [(ngModel)]="endTime"
+                      (ngModelChange)="filterLogs()"></ngb-timepicker>
     </div>
   </div>
+</ng-template>
+
+<ng-template #noEntriesTpl>
+  <span i18n>No log entries found. Please try to select different filter options.</span>
+  <span>&nbsp;</span>
+  <a href="#"
+     (click)="resetFilter()"
+     i18n>Reset filter.</a>
 </ng-template>

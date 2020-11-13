@@ -28,6 +28,7 @@
 #include "rgw_string.h"
 #include "rgw_multi.h"
 #include "rgw_sal.h"
+#include "rgw_sal_rados.h"
 
 // this seems safe to use, at least for now--arguably, we should
 // prefer header-only fmt, in general
@@ -352,12 +353,19 @@ static bool obj_has_expired(CephContext *cct, ceph::real_time mtime, int days,
     cmp = days*cct->_conf->rgw_lc_debug_interval;
     base_time = ceph_clock_now();
   }
-  timediff = base_time - ceph::real_clock::to_time_t(mtime);
+  auto tt_mtime = ceph::real_clock::to_time_t(mtime);
+  timediff = base_time - tt_mtime;
 
   if (expire_time) {
     *expire_time = mtime + make_timespan(cmp);
   }
-  ldout(cct, 20) << __func__ << "(): mtime=" << mtime << " days=" << days << " base_time=" << base_time << " timediff=" << timediff << " cmp=" << cmp << dendl;
+
+  ldout(cct, 20) << __func__ << __func__
+		 << "(): mtime=" << mtime << " days=" << days
+		 << " base_time=" << base_time << " timediff=" << timediff
+		 << " cmp=" << cmp
+		 << " is_expired=" << (timediff >= cmp) 
+		 << dendl;
 
   return (timediff >= cmp);
 }
@@ -530,7 +538,7 @@ struct lc_op_ctx {
   op_env env;
   rgw_bucket_dir_entry o;
   boost::optional<std::string> next_key_name;
-  ceph::real_time dm_effective_mtime;
+  ceph::real_time effective_mtime;
 
   rgw::sal::RGWRadosStore *store;
   RGWBucketInfo& bucket_info;
@@ -544,9 +552,10 @@ struct lc_op_ctx {
 
   lc_op_ctx(op_env& env, rgw_bucket_dir_entry& o,
 	    boost::optional<std::string> next_key_name,
-	    ceph::real_time dem,
+	    ceph::real_time effective_mtime,
 	    const DoutPrefixProvider *dpp, WorkQ* wq)
     : cct(env.store->ctx()), env(env), o(o), next_key_name(next_key_name),
+      effective_mtime(effective_mtime),
       store(env.store), bucket_info(env.bucket_info), op(env.op), ol(env.ol),
       obj(env.bucket_info.bucket, o.key), rctx(env.store), dpp(dpp), wq(wq)
     {}
@@ -631,7 +640,7 @@ class LCOpRule {
 
   op_env env;
   boost::optional<std::string> next_key_name;
-  ceph::real_time dm_effective_mtime;
+  ceph::real_time effective_mtime;
 
   std::vector<shared_ptr<LCOpFilter> > filters; // n.b., sharing ovhd
   std::vector<shared_ptr<LCOpAction> > actions;
@@ -641,6 +650,10 @@ public:
 
   boost::optional<std::string> get_next_key_name() {
     return next_key_name;
+  }
+
+  std::vector<shared_ptr<LCOpAction>>& get_actions() {
+    return actions;
   }
 
   void build();
@@ -936,6 +949,8 @@ static inline bool has_all_tags(const lc_op& rule_action,
   for (const auto& tag : object_tags.get_tags()) {
     const auto& rule_tags = rule_action.obj_tags->get_tags();
     const auto& iter = rule_tags.find(tag.first);
+    if(iter == rule_tags.end())
+        continue;
     if(iter->second == tag.second)
     {
       tag_count++;
@@ -1099,10 +1114,8 @@ public:
 
 class LCOpAction_NonCurrentExpiration : public LCOpAction {
 protected:
-  ceph::real_time mtime;
 public:
   LCOpAction_NonCurrentExpiration(op_env& env)
-    : mtime(env.ol.get_prev_obj().meta.mtime)
     {}
 
   bool check(lc_op_ctx& oc, ceph::real_time *exp_time) override {
@@ -1115,11 +1128,13 @@ public:
     }
 
     int expiration = oc.op.noncur_expiration;
-    bool is_expired = obj_has_expired(oc.cct, mtime, expiration, exp_time);
+    bool is_expired = obj_has_expired(oc.cct, oc.effective_mtime, expiration,
+				      exp_time);
 
     ldout(oc.cct, 20) << __func__ << "(): key=" << o.key << ": is_expired="
 		      << is_expired << " "
 		      << oc.wq->thr_name() << dendl;
+
     return is_expired &&
       pass_object_lock_check(oc.store->getRados(),
 			     oc.bucket_info, oc.obj, oc.rctx);
@@ -1260,8 +1275,10 @@ public:
       return -EINVAL;
     }
 
+    rgw::sal::RGWRadosBucket bucket(oc.store, oc.bucket_info);
+    rgw::sal::RGWRadosObject obj(oc.store, oc.obj.key, &bucket);
     int r = oc.store->getRados()->transition_obj(
-      oc.rctx, oc.bucket_info, oc.obj, target_placement, o.meta.mtime,
+      oc.rctx, &bucket, obj, target_placement, o.meta.mtime,
       o.versioned_epoch, oc.dpp, null_yield);
     if (r < 0) {
       ldpp_dout(oc.dpp, 0) << "ERROR: failed to transition obj " 
@@ -1309,7 +1326,7 @@ protected:
   }
 
   ceph::real_time get_effective_mtime(lc_op_ctx& oc) override {
-    return oc.dm_effective_mtime;
+    return oc.effective_mtime;
   }
 public:
   LCOpAction_NonCurrentTransition(op_env& env,
@@ -1358,14 +1375,14 @@ void LCOpRule::build()
 void LCOpRule::update()
 {
   next_key_name = env.ol.next_key_name();
-  dm_effective_mtime = env.ol.get_prev_obj().meta.mtime;
+  effective_mtime = env.ol.get_prev_obj().meta.mtime;
 }
 
 int LCOpRule::process(rgw_bucket_dir_entry& o,
 		      const DoutPrefixProvider *dpp,
 		      WorkQ* wq)
 {
-  lc_op_ctx ctx(env, o, next_key_name, dm_effective_mtime, dpp, wq);
+  lc_op_ctx ctx(env, o, next_key_name, effective_mtime, dpp, wq);
   shared_ptr<LCOpAction> *selected = nullptr; // n.b., req'd by sharing
   real_time exp;
 
@@ -1446,7 +1463,7 @@ int RGWLC::bucket_lc_process(string& shard_id, LCWorker* worker,
   }
 
   auto stack_guard = make_scope_guard(
-    [&worker, &bucket_info]
+    [&worker]
       {
 	worker->workpool->drain();
       }
@@ -2150,8 +2167,8 @@ std::string s3_expiration_header(
   for (const auto& ri : rule_map) {
     const auto& rule = ri.second;
     auto& id = rule.get_id();
-    auto& prefix = rule.get_prefix();
     auto& filter = rule.get_filter();
+    auto& prefix = filter.has_prefix() ? filter.get_prefix(): rule.get_prefix();
     auto& expiration = rule.get_expiration();
     auto& noncur_expiration = rule.get_noncur_expiration();
 
@@ -2181,7 +2198,7 @@ std::string s3_expiration_header(
 
     if(! prefix.empty()) {
       if (! boost::starts_with(obj_key.name, prefix))
-	continue;
+        continue;
     }
 
     if (filter.has_tags()) {
@@ -2189,21 +2206,19 @@ std::string s3_expiration_header(
       const RGWObjTags& rule_tagset = filter.get_tags();
       for (auto& tag : rule_tagset.get_tags()) {
 	/* remember, S3 tags are {key,value} tuples */
-	auto ma1 = obj_tag_map.find(tag.first);
-	if ( ma1 != obj_tag_map.end()) {
-	  if (tag.second == ma1->second) {
-	    ldpp_dout(dpp, 10) << "tag match obj_key=" << obj_key
-			       << " rule_id=" << id
-			       << " tag=" << tag
-			       << " (ma=" << *ma1 << ")"
-			       << dendl;
-	    tag_match = true;
-	    break;
-	  }
-	}
+        tag_match = true;
+        auto obj_tag = obj_tag_map.find(tag.first);
+        if (obj_tag == obj_tag_map.end() || obj_tag->second != tag.second) {
+	        ldpp_dout(dpp, 10) << "tag does not match obj_key=" << obj_key
+			         << " rule_id=" << id
+			         << " tag=" << tag
+			         << dendl;
+	        tag_match = false;
+	        break;
+	      }
       }
       if (! tag_match)
-	continue;
+	      continue;
     }
 
     // compute a uniform expiration date
@@ -2253,5 +2268,71 @@ std::string s3_expiration_header(
   return hdr;
 
 } /* rgwlc_s3_expiration_header */
+
+bool s3_multipart_abort_header(
+  DoutPrefixProvider* dpp,
+  const rgw_obj_key& obj_key,
+  const ceph::real_time& mtime,
+  const std::map<std::string, buffer::list>& bucket_attrs,
+  ceph::real_time& abort_date,
+  std::string& rule_id)
+{
+  CephContext* cct = dpp->get_cct();
+  RGWLifecycleConfiguration config(cct);
+
+  const auto& aiter = bucket_attrs.find(RGW_ATTR_LC);
+  if (aiter == bucket_attrs.end())
+    return false;
+
+  bufferlist::const_iterator iter{&aiter->second};
+  try {
+    config.decode(iter);
+  } catch (const buffer::error& e) {
+    ldpp_dout(dpp, 0) << __func__
+                      <<  "() decode life cycle config failed"
+                      << dendl;
+    return false;
+  } /* catch */
+
+  std::optional<ceph::real_time> abort_date_tmp;
+  std::optional<std::string_view> rule_id_tmp;
+  const auto& rule_map = config.get_rule_map();
+  for (const auto& ri : rule_map) {
+    const auto& rule = ri.second;
+    const auto& id = rule.get_id();
+    const auto& filter = rule.get_filter();
+    const auto& prefix = filter.has_prefix()?filter.get_prefix():rule.get_prefix();
+    const auto& mp_expiration = rule.get_mp_expiration();
+    if (!rule.is_enabled()) {
+      continue;
+    }
+    if(!prefix.empty() && !boost::starts_with(obj_key.name, prefix)) {
+      continue;
+    }
+
+    std::optional<ceph::real_time> rule_abort_date;
+    if (mp_expiration.has_days()) {
+      rule_abort_date = std::optional<ceph::real_time>(
+              mtime + make_timespan(mp_expiration.get_days()*24*60*60 - ceph::real_clock::to_time_t(mtime)%(24*60*60) + 24*60*60));
+    }
+
+    // update earliest abort date
+    if (rule_abort_date) {
+      if ((! abort_date_tmp) ||
+          (*abort_date_tmp > *rule_abort_date)) {
+        abort_date_tmp =
+                std::optional<ceph::real_time>(rule_abort_date);
+        rule_id_tmp = std::optional<std::string_view>(id);
+      }
+    }
+  }
+  if (abort_date_tmp && rule_id_tmp) {
+    abort_date = *abort_date_tmp;
+    rule_id = *rule_id_tmp;
+    return true;
+  } else {
+    return false;
+  }
+}
 
 } /* namespace rgw::lc */

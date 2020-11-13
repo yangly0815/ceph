@@ -324,7 +324,7 @@ Context *SnapshotCreateRequest<I>::handle_create_image_state(int *result) {
 
   update_snap_context();
   if (*result < 0) {
-    lderr(cct) << this << " " << __func__ << ": failed to snapshot object map: "
+    lderr(cct) << this << " " << __func__ << ": failed to create image state: "
                << cpp_strerror(*result) << dendl;
     save_result(result);
   }
@@ -401,10 +401,6 @@ void SnapshotCreateRequest<I>::update_snap_context() {
 
   std::shared_lock owner_locker{image_ctx.owner_lock};
   std::unique_lock image_locker{image_ctx.image_lock};
-  if (image_ctx.old_format) {
-    return;
-  }
-
   if (image_ctx.get_snap_info(m_snap_id) != NULL) {
     return;
   }
@@ -433,6 +429,7 @@ void SnapshotCreateRequest<I>::update_snap_context() {
   image_ctx.snapc.snaps.swap(snaps);
   image_ctx.data_ctx.selfmanaged_snap_set_write_ctx(
     image_ctx.snapc.seq, image_ctx.snaps);
+  image_ctx.rebuild_data_io_context();
 
   if (!image_ctx.migration_info.empty()) {
     auto it = image_ctx.migration_info.snap_map.find(CEPH_NOSNAP);

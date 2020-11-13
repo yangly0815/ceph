@@ -3,23 +3,19 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
+import { TreeModule } from '@circlon/angular-tree-component';
 import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
-import { TreeModule } from 'angular-tree-component';
 import { ToastrModule } from 'ngx-toastr';
 import { BehaviorSubject, of } from 'rxjs';
 
-import {
-  configureTestBed,
-  expectItemTasks,
-  i18nProviders,
-  PermissionHelper
-} from '../../../../testing/unit-test-helper';
-import { IscsiService } from '../../../shared/api/iscsi.service';
-import { TableActionsComponent } from '../../../shared/datatable/table-actions/table-actions.component';
-import { ExecutingTask } from '../../../shared/models/executing-task';
-import { SummaryService } from '../../../shared/services/summary.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { IscsiService } from '~/app/shared/api/iscsi.service';
+import { TableActionsComponent } from '~/app/shared/datatable/table-actions/table-actions.component';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, expectItemTasks, PermissionHelper } from '~/testing/unit-test-helper';
 import { IscsiTabsComponent } from '../iscsi-tabs/iscsi-tabs.component';
 import { IscsiTargetDetailsComponent } from '../iscsi-target-details/iscsi-target-details.component';
 import { IscsiTargetListComponent } from './iscsi-target-list.component';
@@ -45,7 +41,7 @@ describe('IscsiTargetListComponent', () => {
       NgbNavModule
     ],
     declarations: [IscsiTargetListComponent, IscsiTabsComponent, IscsiTargetDetailsComponent],
-    providers: [TaskListService, i18nProviders]
+    providers: [TaskListService]
   });
 
   beforeEach(() => {
@@ -169,6 +165,96 @@ describe('IscsiTargetListComponent', () => {
       addTask('iscsi/target/delete', 'iqn.b');
       expect(component.targets.length).toBe(3);
       expectItemTasks(component.targets[1], 'Deleting');
+    });
+  });
+
+  describe('handling of actions', () => {
+    beforeEach(() => {
+      fixture.detectChanges();
+    });
+
+    let action: CdTableAction;
+
+    const getAction = (name: string): CdTableAction => {
+      return component.tableActions.find((tableAction) => tableAction.name === name);
+    };
+
+    describe('edit', () => {
+      beforeEach(() => {
+        action = getAction('Edit');
+      });
+
+      it('should be disabled if no gateways', () => {
+        component.selection.selected = [
+          {
+            id: '-1'
+          }
+        ];
+        expect(action.disable(undefined)).toBe('Unavailable gateway(s)');
+      });
+
+      it('should be enabled if active sessions', () => {
+        component.selection.selected = [
+          {
+            id: '-1',
+            info: {
+              num_sessions: 1
+            }
+          }
+        ];
+        expect(action.disable(undefined)).toBeFalsy();
+      });
+
+      it('should be enabled if no active sessions', () => {
+        component.selection.selected = [
+          {
+            id: '-1',
+            info: {
+              num_sessions: 0
+            }
+          }
+        ];
+        expect(action.disable(undefined)).toBeFalsy();
+      });
+    });
+
+    describe('delete', () => {
+      beforeEach(() => {
+        action = getAction('Delete');
+      });
+
+      it('should be disabled if no gateways', () => {
+        component.selection.selected = [
+          {
+            id: '-1'
+          }
+        ];
+        expect(action.disable(undefined)).toBe('Unavailable gateway(s)');
+      });
+
+      it('should be disabled if active sessions', () => {
+        component.selection.selected = [
+          {
+            id: '-1',
+            info: {
+              num_sessions: 1
+            }
+          }
+        ];
+        expect(action.disable(undefined)).toBe('Target has active sessions');
+      });
+
+      it('should be enabled if no active sessions', () => {
+        component.selection.selected = [
+          {
+            id: '-1',
+            info: {
+              num_sessions: 0
+            }
+          }
+        ];
+        expect(action.disable(undefined)).toBeFalsy();
+      });
     });
   });
 

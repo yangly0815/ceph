@@ -5,8 +5,8 @@ import { Router } from '@angular/router';
 
 import { ToastrService } from 'ngx-toastr';
 
-import { configureTestBed, i18nProviders } from '../../../testing/unit-test-helper';
-import { AppModule } from '../../app.module';
+import { AppModule } from '~/app/app.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { NotificationType } from '../enum/notification-type.enum';
 import { CdNotification, CdNotificationConfig } from '../models/cd-notification';
 import { ApiInterceptorService } from './api-interceptor.service';
@@ -62,7 +62,6 @@ describe('ApiInterceptorService', () => {
     imports: [AppModule, HttpClientTestingModule],
     providers: [
       NotificationService,
-      i18nProviders,
       {
         provide: ToastrService,
         useValue: {

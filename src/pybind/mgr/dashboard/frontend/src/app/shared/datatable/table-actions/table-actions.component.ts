@@ -1,11 +1,11 @@
 import { Component, Input, OnInit } from '@angular/core';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdTableAction } from '../../models/cd-table-action';
-import { CdTableSelection } from '../../models/cd-table-selection';
-import { Permission } from '../../models/permissions';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { Permission } from '~/app/shared/models/permissions';
 
 @Component({
   selector: 'cd-table-actions',
@@ -20,7 +20,7 @@ export class TableActionsComponent implements OnInit {
   @Input()
   tableActions: CdTableAction[];
   @Input()
-  btnColor = 'secondary';
+  btnColor = 'accent';
 
   // Use this if you just want to display a drop down button,
   // labeled with the given text, with all actions in it.
@@ -146,6 +146,11 @@ export class TableActionsComponent implements OnInit {
   }
 
   useDisableDesc(action: CdTableAction) {
-    return action.disableDesc && action.disableDesc(this.selection);
+    if (action.disable) {
+      const result = action.disable(this.selection);
+      return _.isString(result) ? result : undefined;
+    }
+
+    return undefined;
   }
 }

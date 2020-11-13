@@ -25,6 +25,18 @@ Definitions
 Monitor
 -------
 
+DAEMON_OLD_VERSION
+__________________
+
+Warn if old version(s) of Ceph are running on any daemons.
+It will generate a health error if multiple versions are detected.
+This condition must exist for over mon_warn_older_version_delay (set to 1 week by default) in order for the
+health condition to be triggered.  This allows most upgrades to proceed
+without falsely seeing the warning.  If upgrade is paused for an extended
+time period, health mute can be used like this
+"ceph health mute DAEMON_OLD_VERSION --sticky".  In this case after
+upgrade has finished use "ceph health unmute DAEMON_OLD_VERSION".
+
 MON_DOWN
 ________
 
@@ -1015,12 +1027,12 @@ told to roll back to a previous version of the object. See
 SLOW_OPS
 ________
 
-One or more OSD requests is taking a long time to process.  This can
+One or more OSD or monitor requests is taking a long time to process.  This can
 be an indication of extreme load, a slow storage device, or a software
 bug.
 
-The request queue on the OSD(s) in question can be queried with the
-following command, executed from the OSD host::
+The request queue for the daemon in question can be queried with the
+following command, executed from the daemon's host::
 
   ceph daemon osd.<id> ops
 

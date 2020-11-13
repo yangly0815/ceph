@@ -39,8 +39,6 @@
 class CDentry;
 class MDCache;
 
-struct ObjectOperation;
-
 std::ostream& operator<<(std::ostream& out, const class CDir& dir);
 
 class CDir : public MDSCacheObject, public Counter<CDir> {
@@ -49,6 +47,36 @@ public:
 
   typedef mempool::mds_co::map<dentry_key_t, CDentry*> dentry_key_map;
   typedef mempool::mds_co::set<dentry_key_t> dentry_key_set;
+
+  using fnode_ptr = std::shared_ptr<fnode_t>;
+  using fnode_const_ptr = std::shared_ptr<const fnode_t>;
+
+  template <typename ...Args>
+  static fnode_ptr allocate_fnode(Args && ...args) {
+    static mempool::mds_co::pool_allocator<fnode_t> allocator;
+    return std::allocate_shared<fnode_t>(allocator, std::forward<Args>(args)...);
+  }
+
+  struct dentry_commit_item {
+    dentry_key_t key;
+    snapid_t first;
+    bool is_remote = false;
+
+    inodeno_t ino;
+    unsigned char d_type;
+
+    bool snaprealm = false;
+    sr_t srnode;
+
+    mempool::mds_co::string symlink;
+    uint64_t features;
+    uint64_t dft_len;
+    CInode::inode_const_ptr inode;
+    CInode::xattr_map_const_ptr xattrs;
+    CInode::old_inode_map_const_ptr old_inodes;
+    snapid_t oldest_snap;
+    damage_flags_t damage_flags;
+  };
 
   // -- freezing --
   struct freeze_tree_state_t {
@@ -195,7 +223,7 @@ public:
   static const int DUMP_ALL              = (-1);
   static const int DUMP_DEFAULT          = DUMP_ALL & (~DUMP_ITEMS);
 
-  CDir(CInode *in, frag_t fg, MDCache *mdcache, bool auth);
+  CDir(CInode *in, frag_t fg, MDCache *mdc, bool auth);
 
   std::string_view pin_name(int p) const override {
     switch (p) {
@@ -219,8 +247,8 @@ public:
 
   void resync_accounted_fragstat();
   void resync_accounted_rstat();
-  void assimilate_dirty_rstat_inodes();
-  void assimilate_dirty_rstat_inodes_finish(MutationRef& mut, EMetaBlob *blob);
+  void assimilate_dirty_rstat_inodes(MutationRef& mut);
+  void assimilate_dirty_rstat_inodes_finish(EMetaBlob *blob);
 
   void mark_exporting() {
     state_set(CDir::STATE_EXPORTING);
@@ -231,29 +259,44 @@ public:
     inode->num_exporting_dirs--;
   }
 
-  version_t get_version() const { return fnode.version; }
-  void set_version(version_t v) { 
+  version_t get_version() const { return fnode->version; }
+  void update_projected_version() {
     ceph_assert(projected_fnode.empty());
-    projected_version = fnode.version = v; 
+    projected_version = fnode->version;
   }
   version_t get_projected_version() const { return projected_version; }
 
-  const fnode_t *get_projected_fnode() const {
-    if (projected_fnode.empty())
-      return &fnode;
-    else
-      return &projected_fnode.back();
+  void reset_fnode(fnode_const_ptr&& ptr) {
+    fnode = std::move(ptr);
   }
 
-  fnode_t *get_projected_fnode() {
-    if (projected_fnode.empty())
-      return &fnode;
-    else
-      return &projected_fnode.back();
+  const fnode_const_ptr& get_fnode() const {
+    return fnode;
   }
-  fnode_t *project_fnode();
 
-  void pop_and_dirty_projected_fnode(LogSegment *ls);
+  // only used for updating newly allocated CDir
+  fnode_t* _get_fnode() {
+    if (fnode == empty_fnode)
+      reset_fnode(allocate_fnode());
+    return const_cast<fnode_t*>(fnode.get());
+  }
+
+  const fnode_const_ptr& get_projected_fnode() const {
+    if (projected_fnode.empty())
+      return fnode;
+    else
+      return projected_fnode.back();
+  }
+
+  // fnode should have already been projected in caller's context
+  fnode_t* _get_projected_fnode() {
+    ceph_assert(!projected_fnode.empty());
+    return const_cast<fnode_t*>(projected_fnode.back().get());
+  }
+
+  fnode_ptr project_fnode(const MutationRef& mut);
+
+  void pop_and_dirty_projected_fnode(LogSegment *ls, const MutationRef& mut);
   bool is_projected() const { return !projected_fnode.empty(); }
   version_t pre_dirty(version_t min=0);
   void _mark_dirty(LogSegment *ls);
@@ -263,7 +306,7 @@ public:
       get(PIN_DIRTY);
     }
   }
-  void mark_dirty(version_t pv, LogSegment *ls);
+  void mark_dirty(LogSegment *ls, version_t pv=0);
   void mark_clean();
 
   bool is_new() { return item_new.is_on_list(); }
@@ -396,10 +439,7 @@ public:
            (int)get_frag_size() > g_conf()->mds_bal_split_size;
   }
   bool should_split_fast() const;
-  bool should_merge() const {
-    return get_frag() != frag_t() &&
-	   (int)get_frag_size() < g_conf()->mds_bal_merge_size;
-  }
+  bool should_merge() const;
 
   mds_authority_t authority() const override;
   mds_authority_t get_dir_auth() const { return dir_auth; }
@@ -423,7 +463,7 @@ public:
 
   // for giving to clients
   void get_dist_spec(std::set<mds_rank_t>& ls, mds_rank_t auth) {
-    if (is_rep()) {
+    if (is_auth()) {
       list_replicas(ls);
       if (!ls.empty()) 
 	ls.insert(auth);
@@ -435,7 +475,7 @@ public:
   void _encode_base(ceph::buffer::list& bl) {
     ENCODE_START(1, 1, bl);
     encode(first, bl);
-    encode(fnode, bl);
+    encode(*fnode, bl);
     encode(dir_rep, bl);
     encode(dir_rep_by, bl);
     ENCODE_FINISH(bl);
@@ -443,7 +483,11 @@ public:
   void _decode_base(ceph::buffer::list::const_iterator& p) {
     DECODE_START(1, p);
     decode(first, p);
-    decode(fnode, p);
+    {
+      auto _fnode = allocate_fnode();
+      decode(*_fnode, p);
+      reset_fnode(std::move(_fnode));
+    }
     decode(dir_rep, p);
     decode(dir_rep_by, p);
     DECODE_FINISH(p);
@@ -499,6 +543,9 @@ public:
   void finish_waiting(uint64_t mask, int result = 0);    // ditto
 
   // -- import/export --
+  mds_rank_t get_export_pin(bool inherit=true) const;
+  bool is_exportable(mds_rank_t dest) const;
+
   void encode_export(ceph::buffer::list& bl);
   void finish_export();
   void abort_export() {
@@ -599,12 +646,11 @@ public:
   void dump_load(ceph::Formatter *f);
 
   // context
-  MDCache *cache;
+  MDCache *mdcache;
 
   CInode *inode;  // my inode
   frag_t frag;   // my frag
 
-  fnode_t fnode;
   snapid_t first = 2;
   mempool::mds_co::compact_map<snapid_t,old_rstat_t> dirty_old_rstat;  // [value.first,key]
 
@@ -634,6 +680,7 @@ protected:
   friend class C_IO_Dir_OMAP_Fetched;
   friend class C_IO_Dir_OMAP_FetchedMore;
   friend class C_IO_Dir_Committed;
+  friend class C_IO_Dir_Commit_Ops;
 
   void _omap_fetch(MDSContext *fin, const std::set<dentry_key_t>& keys);
   void _omap_fetch_more(
@@ -646,12 +693,8 @@ protected:
       ceph::buffer::list &bl,
       int pos,
       const std::set<snapid_t> *snaps,
+      double rand_threshold,
       bool *force_dirty);
-
-  /**
-   * Mark this fragment as BADFRAG (common part of go_bad and go_bad_dentry)
-   */
-  void _go_bad();
 
   /**
    * Go bad due to a damaged dentry (register with damagetable and go BADFRAG)
@@ -668,12 +711,22 @@ protected:
 
   // -- commit --
   void _commit(version_t want, int op_prio);
+  void _omap_commit_ops(int r, int op_prio, version_t version, bool _new, bufferlist &bl,
+                        vector<dentry_key_t> &to_remove, vector<dentry_commit_item> &to_set,
+			mempool::mds_co::compact_set<mempool::mds_co::string> &_stale);
   void _omap_commit(int op_prio);
-  void _encode_dentry(CDentry *dn, ceph::buffer::list& bl, const std::set<snapid_t> *snaps);
+  void _parse_dentry(CDentry *dn, dentry_commit_item &item,
+                     const set<snapid_t> *snaps, bufferlist &bl);
   void _committed(int r, version_t v);
 
+  static fnode_const_ptr empty_fnode;
+  // fnode is a pointer to constant fnode_t, the constant fnode_t can be shared
+  // by CDir and log events. To update fnode, read-copy-update should be used.
+
+  fnode_const_ptr fnode = empty_fnode;
+
   version_t projected_version = 0;
-  mempool::mds_co::list<fnode_t> projected_fnode;
+  mempool::mds_co::list<fnode_const_ptr> projected_fnode;
 
   std::unique_ptr<scrub_info_t> scrub_infop;
 

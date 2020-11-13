@@ -310,7 +310,7 @@ int main(int argc, const char **argv)
 
   auto cct = global_init(&defaults, args,
 			 CEPH_ENTITY_TYPE_MON, CODE_ENVIRONMENT_DAEMON,
-			 flags, "mon_data");
+			 flags);
   ceph_heap_profiler_init();
 
   std::string val;
@@ -738,8 +738,7 @@ int main(int argc, const char **argv)
     ipaddrs = monmap.get_addrs(g_conf()->name.get_id());
 
     // print helpful warning if the conf file doesn't match
-    std::vector <std::string> my_sections;
-    g_conf().get_my_sections(my_sections);
+    std::vector<std::string> my_sections = g_conf().get_my_sections();
     std::string mon_addr_str;
     if (g_conf().get_val_from_conf_file(my_sections, "mon addr",
 				       mon_addr_str, true) == 0) {
@@ -791,9 +790,7 @@ int main(int argc, const char **argv)
   int rank = monmap.get_rank(g_conf()->name.get_id());
   std::string public_msgr_type = g_conf()->ms_public_type.empty() ? g_conf().get_val<std::string>("ms_type") : g_conf()->ms_public_type;
   Messenger *msgr = Messenger::create(g_ceph_context, public_msgr_type,
-				      entity_name_t::MON(rank), "mon",
-				      0,  // zero nonce
-				      Messenger::HAS_MANY_CONNECTIONS);
+				      entity_name_t::MON(rank), "mon", 0);
   if (!msgr)
     exit(1);
   msgr->set_cluster_protocol(CEPH_MON_PROTOCOL);
@@ -844,8 +841,7 @@ int main(int argc, const char **argv)
 
   Messenger *mgr_msgr = Messenger::create(g_ceph_context, public_msgr_type,
 					  entity_name_t::MON(rank), "mon-mgrc",
-					  Messenger::get_pid_nonce(),
-					  0);
+					  Messenger::get_pid_nonce());
   if (!mgr_msgr) {
     derr << "unable to create mgr_msgr" << dendl;
     prefork.exit(1);

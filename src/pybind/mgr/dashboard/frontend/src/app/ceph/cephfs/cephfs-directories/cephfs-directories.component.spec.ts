@@ -4,34 +4,28 @@ import { ComponentFixture, fakeAsync, TestBed, tick } from '@angular/core/testin
 import { Validators } from '@angular/forms';
 import { RouterTestingModule } from '@angular/router/testing';
 
+import { TreeComponent, TreeModule, TREE_ACTIONS } from '@circlon/angular-tree-component';
 import { NgbActiveModal, NgbModalModule, NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
-import { TreeComponent, TreeModule, TREE_ACTIONS } from 'angular-tree-component';
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
 import { ToastrModule } from 'ngx-toastr';
 import { Observable, of } from 'rxjs';
 
-import {
-  configureTestBed,
-  i18nProviders,
-  modalServiceShow,
-  PermissionHelper
-} from '../../../../testing/unit-test-helper';
-import { CephfsService } from '../../../shared/api/cephfs.service';
-import { ConfirmationModalComponent } from '../../../shared/components/confirmation-modal/confirmation-modal.component';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { FormModalComponent } from '../../../shared/components/form-modal/form-modal.component';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
+import { CephfsService } from '~/app/shared/api/cephfs.service';
+import { ConfirmationModalComponent } from '~/app/shared/components/confirmation-modal/confirmation-modal.component';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { FormModalComponent } from '~/app/shared/components/form-modal/form-modal.component';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
 import {
   CephfsDir,
   CephfsQuotas,
   CephfsSnapshot
-} from '../../../shared/models/cephfs-directory-models';
-import { ModalService } from '../../../shared/services/modal.service';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { SharedModule } from '../../../shared/shared.module';
+} from '~/app/shared/models/cephfs-directory-models';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, modalServiceShow, PermissionHelper } from '~/testing/unit-test-helper';
 import { CephfsDirectoriesComponent } from './cephfs-directories.component';
 
 describe('CephfsDirectoriesComponent', () => {
@@ -369,13 +363,12 @@ describe('CephfsDirectoriesComponent', () => {
         HttpClientTestingModule,
         SharedModule,
         RouterTestingModule,
-        TreeModule.forRoot(),
-        NgBootstrapFormValidationModule.forRoot(),
+        TreeModule,
         ToastrModule.forRoot(),
         NgbModalModule
       ],
       declarations: [CephfsDirectoriesComponent],
-      providers: [i18nProviders, NgbActiveModal]
+      providers: [NgbActiveModal]
     },
     [CriticalConfirmationModalComponent, FormModalComponent, ConfirmationModalComponent]
   );
@@ -395,7 +388,7 @@ describe('CephfsDirectoriesComponent', () => {
     lsDirSpy = spyOn(cephfsService, 'lsDir').and.callFake(mockLib.lsDir);
     spyOn(cephfsService, 'mkSnapshot').and.callFake(mockLib.mkSnapshot);
     spyOn(cephfsService, 'rmSnapshot').and.callFake(mockLib.rmSnapshot);
-    spyOn(cephfsService, 'updateQuota').and.callFake(mockLib.updateQuota);
+    spyOn(cephfsService, 'quota').and.callFake(mockLib.updateQuota);
 
     modalShowSpy = spyOn(TestBed.inject(ModalService), 'show').and.callFake(mockLib.modalShow);
     notificationShowSpy = spyOn(TestBed.inject(NotificationService), 'show').and.stub();
@@ -778,7 +771,7 @@ describe('CephfsDirectoriesComponent', () => {
         });
 
         it('should update max_files correctly', () => {
-          expect(cephfsService.updateQuota).toHaveBeenCalledWith(1, '/a/c/b', { max_files: 5 });
+          expect(cephfsService.quota).toHaveBeenCalledWith(1, '/a/c/b', { max_files: 5 });
           assert.quotaIsNotInherited('files', 5, 10);
         });
 
@@ -804,7 +797,7 @@ describe('CephfsDirectoriesComponent', () => {
         });
 
         it('should update max_files correctly', () => {
-          expect(cephfsService.updateQuota).toHaveBeenCalledWith(1, '/a/c/b', { max_bytes: 512 });
+          expect(cephfsService.quota).toHaveBeenCalledWith(1, '/a/c/b', { max_bytes: 512 });
           assert.quotaIsNotInherited('bytes', '512 B', 1024);
         });
 
@@ -849,7 +842,7 @@ describe('CephfsDirectoriesComponent', () => {
         });
 
         it('should unset max_files correctly', () => {
-          expect(cephfsService.updateQuota).toHaveBeenCalledWith(1, '/a/c/b', { max_files: 0 });
+          expect(cephfsService.quota).toHaveBeenCalledWith(1, '/a/c/b', { max_files: 0 });
           assert.dirQuotas(2048, 0);
         });
 
@@ -869,7 +862,7 @@ describe('CephfsDirectoriesComponent', () => {
         });
 
         it('should unset max_files correctly', () => {
-          expect(cephfsService.updateQuota).toHaveBeenCalledWith(1, '/a/c/b', { max_bytes: 0 });
+          expect(cephfsService.quota).toHaveBeenCalledWith(1, '/a/c/b', { max_bytes: 0 });
           assert.dirQuotas(0, 20);
         });
 

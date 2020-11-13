@@ -1,7 +1,3 @@
-<cd-alert-panel type="error"
-                *ngIf="loadingError"
-                i18n>Failed to load data.</cd-alert-panel>
-
 <div class="dataTables_wrapper">
 
   <div *ngIf="onlyActionHeader"
@@ -17,10 +13,6 @@
       <ng-content select=".table-actions"></ng-content>
     </div>
     <!-- end actions -->
-
-    <!-- filters -->
-    <ng-content select=".table-filters"></ng-content>
-    <!-- end filters -->
 
     <!-- column filters -->
     <div *ngIf="columnFilters.length !== 0"
@@ -86,7 +78,8 @@
     <!-- end search -->
 
     <!-- pagination limit -->
-    <div class="input-group dataTables_paginate">
+    <div class="input-group dataTables_paginate"
+         *ngIf="limit">
       <input class="form-control"
              type="number"
              min="1"
@@ -133,7 +126,8 @@
          *ngIf="fetchData.observers.length > 0">
 
       <button type="button"
-              class="btn btn-light"
+              [class]="'btn btn-' + status.type"
+              [ngbTooltip]="status.msg"
               (click)="refreshBtn()">
         <i [ngClass]="[icons.large, icons.refresh]"
            [class.fa-spin]="updating || loadingIndicator"></i>
@@ -311,6 +305,6 @@
      class="expand-collapse-icon tc_expand-collapse"
      title="Expand/Collapse Row"
      i18n-title
-     (click)="toggleExpandRow(row, isExpanded)">
+     (click)="toggleExpandRow(row, isExpanded, $event)">
   </a>
 </ng-template>

@@ -28,12 +28,18 @@
         "build": {
           "builder": "@angular-devkit/build-angular:browser",
           "options": {
+            "allowedCommonJsDependencies": [
+              "chart.js",
+              "core-js",
+              "file-saver",
+              "lodash"
+            ],
             "aot": true,
             "i18nMissingTranslation": "ignore",
             "outputPath": "dist",
             "index": "src/index.html",
             "main": "src/main.ts",
-            "tsConfig": "src/tsconfig.app.json",
+            "tsConfig": "tsconfig.app.json",
             "polyfills": "src/polyfills.ts",
             "assets": [
               "src/assets",
@@ -51,16 +57,11 @@
             ],
             "styles": [
               "node_modules/ngx-toastr/toastr.css",
-              "node_modules/ngx-bootstrap/datepicker/bs-datepicker.css",
-              "src/styles.scss",
-              "src/styles/vendor.overrides.scss"
+              "src/styles.scss"
             ],
-            "scripts": [
-              "node_modules/chart.js/dist/Chart.bundle.js"
-            ],
+            "scripts": ["node_modules/chart.js/dist/Chart.bundle.js"],
             "stylePreprocessorOptions": {
               "includePaths": [
-                "src/styles",
                 "src"
               ]
             }
@@ -190,7 +191,7 @@
           "builder": "@angular-devkit/build-angular:tslint",
           "options": {
             "tsConfig": [
-              "src/tsconfig.app.json",
+              "tsconfig.app.json",
               "tsconfig.spec.json",
               "cypress/tsconfig.json"
             ],

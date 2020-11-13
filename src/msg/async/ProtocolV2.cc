@@ -749,17 +749,17 @@ CtPtr ProtocolV2::read(CONTINUATION_RXBPTR_TYPE<ProtocolV2> &next,
       if (unlikely(pre_auth.enabled) && r >= 0) {
         pre_auth.rxbuf.append(*next.node);
 	ceph_assert(!cct->_conf->ms_die_on_bug ||
-		    pre_auth.rxbuf.length() < 1000000);
+		    pre_auth.rxbuf.length() < 10000000);
       }
       next.r = r;
       run_continuation(next);
     });
   if (r <= 0) {
     // error or done synchronously
-    if (unlikely(pre_auth.enabled) && r >= 0) {
+    if (unlikely(pre_auth.enabled) && r == 0) {
       pre_auth.rxbuf.append(*next.node);
       ceph_assert(!cct->_conf->ms_die_on_bug ||
-		  pre_auth.rxbuf.length() < 1000000);
+		  pre_auth.rxbuf.length() < 10000000);
     }
     next.r = r;
     return &next;
@@ -791,7 +791,7 @@ CtPtr ProtocolV2::write(const std::string &desc,
   if (unlikely(pre_auth.enabled)) {
     pre_auth.txbuf.append(buffer);
     ceph_assert(!cct->_conf->ms_die_on_bug ||
-		pre_auth.txbuf.length() < 1000000);
+		pre_auth.txbuf.length() < 10000000);
   }
 
   ssize_t r =
@@ -2050,8 +2050,8 @@ CtPtr ProtocolV2::handle_server_ident(ceph::bufferlist &payload)
                 << " features_supported=" << std::hex
                 << server_ident.supported_features()
                 << " features_required=" << server_ident.required_features()
-                << " flags=" << server_ident.flags() << " cookie=" << std::dec
-                << server_ident.cookie() << dendl;
+                << " flags=" << server_ident.flags()
+                << " cookie=" << server_ident.cookie() << std::dec << dendl;
 
   // is this who we intended to talk to?
   // be a bit forgiving here, since we may be connecting based on addresses parsed out
@@ -2645,6 +2645,10 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
   exproto->pre_auth.enabled = false;
 
   if (!reconnecting) {
+    exproto->peer_supported_features = peer_supported_features;
+    exproto->tx_frame_asm.set_is_rev1(tx_frame_asm.get_is_rev1());
+    exproto->rx_frame_asm.set_is_rev1(rx_frame_asm.get_is_rev1());
+
     exproto->client_cookie = client_cookie;
     exproto->peer_name = peer_name;
     exproto->connection_features = connection_features;
@@ -2797,8 +2801,8 @@ CtPtr ProtocolV2::send_server_ident() {
                 << connection->policy.features_supported
                 << " features_required="
 		            << (connection->policy.features_required | msgr2_required)
-                << " flags=" << flags << " cookie=" << std::dec << server_cookie
-                << dendl;
+                << " flags=" << flags
+                << " cookie=" << server_cookie << std::dec << dendl;
 
   connection->lock.unlock();
   // Because "replacing" will prevent other connections preempt this addr,

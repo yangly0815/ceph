@@ -13,6 +13,9 @@
 
 namespace crimson::os::seastore {
 
+using depth_t = int32_t;
+using depth_le_t = ceph_les32;
+
 using checksum_t = uint32_t;
 
 // Identifies segment location on disk, see SegmentManager,
@@ -24,6 +27,10 @@ constexpr segment_id_t RECORD_REL_SEG_ID =
   std::numeric_limits<segment_id_t>::max() - 2;
 constexpr segment_id_t BLOCK_REL_SEG_ID =
   std::numeric_limits<segment_id_t>::max() - 3;
+
+// for tests which generate fake paddrs
+constexpr segment_id_t FAKE_SEG_ID =
+  std::numeric_limits<segment_id_t>::max() - 4;
 
 std::ostream &segment_to_stream(std::ostream &, const segment_id_t &t);
 
@@ -108,7 +115,8 @@ struct paddr_t {
    * block_relative address.
    */
   paddr_t operator-(paddr_t rhs) const {
-    assert(rhs.is_record_relative() && is_record_relative());
+    assert(rhs.is_relative() && is_relative());
+    assert(rhs.segment == segment);
     return paddr_t{
       BLOCK_REL_SEG_ID,
       offset - rhs.offset
@@ -148,6 +156,9 @@ constexpr paddr_t make_record_relative_paddr(segment_off_t off) {
 constexpr paddr_t make_block_relative_paddr(segment_off_t off) {
   return paddr_t{BLOCK_REL_SEG_ID, off};
 }
+constexpr paddr_t make_fake_paddr(segment_off_t off) {
+  return paddr_t{FAKE_SEG_ID, off};
+}
 
 struct paddr_le_t {
   ceph_le32 segment = init_le32(NULL_SEG_ID);
@@ -167,6 +178,33 @@ struct paddr_le_t {
 
 std::ostream &operator<<(std::ostream &out, const paddr_t &rhs);
 
+using objaddr_t = uint32_t;
+constexpr objaddr_t OBJ_ADDR_MIN = std::numeric_limits<objaddr_t>::min();
+
+/* Monotonically increasing identifier for the location of a
+ * journal_record.
+ */
+struct journal_seq_t {
+  segment_seq_t segment_seq = 0;
+  paddr_t offset;
+
+  DENC(journal_seq_t, v, p) {
+    DENC_START(1, 1, p);
+    denc(v.segment_seq, p);
+    denc(v.offset, p);
+    DENC_FINISH(p);
+  }
+};
+WRITE_CMP_OPERATORS_2(journal_seq_t, segment_seq, offset)
+WRITE_EQ_OPERATORS_2(journal_seq_t, segment_seq, offset)
+
+std::ostream &operator<<(std::ostream &out, const journal_seq_t &seq);
+
+static constexpr journal_seq_t NO_DELTAS = journal_seq_t{
+  NULL_SEG_SEQ,
+  P_ADDR_NULL
+};
+
 // logical addr, see LBAManager, TransactionManager
 using laddr_t = uint64_t;
 constexpr laddr_t L_ADDR_MIN = std::numeric_limits<laddr_t>::min();
@@ -175,7 +213,24 @@ constexpr laddr_t L_ADDR_NULL = std::numeric_limits<laddr_t>::max();
 constexpr laddr_t L_ADDR_ROOT = std::numeric_limits<laddr_t>::max() - 1;
 constexpr laddr_t L_ADDR_LBAT = std::numeric_limits<laddr_t>::max() - 2;
 
-using laddr_le_t = ceph_le64;
+struct laddr_le_t {
+  ceph_le64 laddr = init_le64(L_ADDR_NULL);
+
+  laddr_le_t() = default;
+  laddr_le_t(const laddr_le_t &) = default;
+  explicit laddr_le_t(const laddr_t &addr)
+    : laddr(init_le64(addr)) {}
+
+  operator laddr_t() const {
+    return laddr_t(laddr);
+  }
+  laddr_le_t& operator=(laddr_t addr) {
+    ceph_le64 val;
+    val = addr;
+    laddr = val;
+    return *this;
+  }
+};
 
 // logical offset, see LBAManager, TransactionManager
 using extent_len_t = uint32_t;
@@ -212,18 +267,34 @@ enum class extent_types_t : uint8_t {
   LADDR_INTERNAL = 1,
   LADDR_LEAF = 2,
   ONODE_BLOCK = 3,
+  EXTMAP_INNER = 4,
+  EXTMAP_LEAF = 5,
 
   // Test Block Types
   TEST_BLOCK = 0xF0,
+  TEST_BLOCK_PHYSICAL = 0xF1,
 
   // None
   NONE = 0xFF
 };
 
+inline bool is_logical_type(extent_types_t type) {
+  switch (type) {
+  case extent_types_t::ROOT:
+  case extent_types_t::LADDR_INTERNAL:
+  case extent_types_t::LADDR_LEAF:
+    return false;
+  default:
+    return true;
+  }
+}
+
 std::ostream &operator<<(std::ostream &out, extent_types_t t);
 
 /* description of a new physical extent */
 struct extent_t {
+  extent_types_t type;  ///< type of extent
+  laddr_t addr;         ///< laddr of extent (L_ADDR_NULL for non-logical)
   ceph::bufferlist bl;  ///< payload, bl.length() == length, aligned
 };
 
@@ -234,10 +305,9 @@ constexpr extent_version_t EXTENT_VERSION_NULL = 0;
 struct delta_info_t {
   extent_types_t type = extent_types_t::NONE;  ///< delta type
   paddr_t paddr;                               ///< physical address
-  /* logical address -- needed for repopulating cache -- TODO don't actually need */
-  // laddr_t laddr = L_ADDR_NULL;
-  uint32_t prev_crc;
-  uint32_t final_crc;
+  laddr_t laddr = L_ADDR_NULL;                 ///< logical address
+  uint32_t prev_crc = 0;
+  uint32_t final_crc = 0;
   segment_off_t length = NULL_SEG_OFF;         ///< extent length
   extent_version_t pversion;                   ///< prior version
   ceph::bufferlist bl;                         ///< payload
@@ -246,7 +316,7 @@ struct delta_info_t {
     DENC_START(1, 1, p);
     denc(v.type, p);
     denc(v.paddr, p);
-    //denc(v.laddr, p);
+    denc(v.laddr, p);
     denc(v.prev_crc, p);
     denc(v.final_crc, p);
     denc(v.length, p);
@@ -259,6 +329,7 @@ struct delta_info_t {
     return (
       type == rhs.type &&
       paddr == rhs.paddr &&
+      laddr == rhs.laddr &&
       prev_crc == rhs.prev_crc &&
       final_crc == rhs.final_crc &&
       length == rhs.length &&
@@ -280,4 +351,5 @@ struct record_t {
 }
 
 WRITE_CLASS_DENC_BOUNDED(crimson::os::seastore::paddr_t)
+WRITE_CLASS_DENC_BOUNDED(crimson::os::seastore::journal_seq_t)
 WRITE_CLASS_DENC_BOUNDED(crimson::os::seastore::delta_info_t)

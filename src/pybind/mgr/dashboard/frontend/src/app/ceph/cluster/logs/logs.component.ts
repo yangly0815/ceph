@@ -1,8 +1,10 @@
 import { DatePipe } from '@angular/common';
 import { Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 
-import { LogsService } from '../../../shared/api/logs.service';
-import { Icons } from '../../../shared/enum/icons.enum';
+import { NgbDateStruct } from '@ng-bootstrap/ng-bootstrap';
+
+import { LogsService } from '~/app/shared/api/logs.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
 
 @Component({
   selector: 'cd-logs',
@@ -14,13 +16,11 @@ export class LogsComponent implements OnInit, OnDestroy {
   clog: Array<any>;
   audit_log: Array<any>;
   icons = Icons;
+  logText: string;
 
   interval: number;
-  bsConfig = {
-    dateInputFormat: 'YYYY-MM-DD',
-    containerClass: 'theme-default'
-  };
-  prioritys: Array<{ name: string; value: string }> = [
+  priorities: Array<{ name: string; value: string }> = [
+    { name: 'Debug', value: '[DBG]' },
     { name: 'Info', value: '[INF]' },
     { name: 'Warning', value: '[WRN]' },
     { name: 'Error', value: '[ERR]' },
@@ -28,17 +28,20 @@ export class LogsComponent implements OnInit, OnDestroy {
   ];
   priority = 'All';
   search = '';
-  selectedDate: Date;
-  startTime: Date = new Date();
-  endTime: Date = new Date();
+  selectedDate: NgbDateStruct;
+  startTime = { hour: 0, minute: 0 };
+  endTime = { hour: 23, minute: 59 };
+  maxDate = {
+    year: new Date().getFullYear(),
+    month: new Date().getMonth() + 1,
+    day: new Date().getDate()
+  };
+
   constructor(
     private logsService: LogsService,
     private datePipe: DatePipe,
     private ngZone: NgZone
-  ) {
-    this.startTime.setHours(0, 0);
-    this.endTime.setHours(23, 59);
-  }
+  ) {}
 
   ngOnInit() {
     this.getInfo();
@@ -62,16 +65,16 @@ export class LogsComponent implements OnInit, OnDestroy {
     });
   }
 
-  abstractfilters(): any {
+  abstractFilters(): any {
     const priority = this.priority;
     const key = this.search.toLowerCase().replace(/,/g, '');
 
     let yearMonthDay: string;
     if (this.selectedDate) {
-      const m = this.selectedDate.getMonth() + 1;
-      const d = this.selectedDate.getDate();
+      const m = this.selectedDate.month;
+      const d = this.selectedDate.day;
 
-      const year = this.selectedDate.getFullYear().toString();
+      const year = this.selectedDate.year;
       const month = m <= 9 ? `0${m}` : `${m}`;
       const day = d <= 9 ? `0${d}` : `${d}`;
       yearMonthDay = `${year}-${month}-${day}`;
@@ -79,12 +82,12 @@ export class LogsComponent implements OnInit, OnDestroy {
       yearMonthDay = '';
     }
 
-    const sHour = this.startTime ? this.startTime.getHours() : 0;
-    const sMinutes = this.startTime ? this.startTime.getMinutes() : 0;
+    const sHour = this.startTime?.hour ?? 0;
+    const sMinutes = this.startTime?.minute ?? 0;
     const sTime = sHour * 60 + sMinutes;
 
-    const eHour = this.endTime ? this.endTime.getHours() : 23;
-    const eMinutes = this.endTime ? this.endTime.getMinutes() : 59;
+    const eHour = this.endTime?.hour ?? 23;
+    const eMinutes = this.endTime?.minute ?? 59;
     const eTime = eHour * 60 + eMinutes;
 
     return { priority, key, yearMonthDay, sTime, eTime };
@@ -111,7 +114,7 @@ export class LogsComponent implements OnInit, OnDestroy {
   }
 
   filterLogs() {
-    const filters = this.abstractfilters();
+    const filters = this.abstractFilters();
     this.clog = this.filterExecutor(this.contentData.clog, filters);
     this.audit_log = this.filterExecutor(this.contentData.audit_log, filters);
   }
@@ -123,5 +126,29 @@ export class LogsComponent implements OnInit, OnDestroy {
   clearDate() {
     this.selectedDate = null;
     this.filterLogs();
+  }
+  resetFilter() {
+    this.priority = 'All';
+    this.search = '';
+    this.selectedDate = null;
+    this.startTime = { hour: 0, minute: 0 };
+    this.endTime = { hour: 23, minute: 59 };
+    this.filterLogs();
+
+    return false;
+  }
+
+  logToText(log: object) {
+    this.logText = '';
+    for (const line of Object.keys(log)) {
+      this.logText =
+        this.logText +
+        this.datePipe.transform(log[line].stamp, 'medium') +
+        '\t' +
+        log[line].priority +
+        '\t' +
+        log[line].message +
+        '\n';
+    }
   }
 }

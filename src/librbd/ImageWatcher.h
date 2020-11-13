@@ -5,6 +5,7 @@
 #define CEPH_LIBRBD_IMAGE_WATCHER_H
 
 #include "cls/rbd/cls_rbd_types.h"
+#include "common/AsyncOpTracker.h"
 #include "common/ceph_mutex.h"
 #include "include/Context.h"
 #include "include/rbd/librbd.hpp"
@@ -77,6 +78,10 @@ public:
                       Context *on_finish);
   void notify_unquiesce(uint64_t request_id, Context *on_finish);
 
+  void notify_metadata_set(const std::string &key, const std::string &value,
+                           Context *on_finish);
+  void notify_metadata_remove(const std::string &key, Context *on_finish);
+
 private:
   enum TaskCode {
     TASK_CODE_REQUEST_LOCK,
@@ -99,7 +104,8 @@ private:
       if (m_task_code != rhs.m_task_code) {
         return m_task_code < rhs.m_task_code;
       } else if ((m_task_code == TASK_CODE_ASYNC_REQUEST ||
-                  m_task_code == TASK_CODE_ASYNC_PROGRESS) &&
+                  m_task_code == TASK_CODE_ASYNC_PROGRESS ||
+                  m_task_code == TASK_CODE_QUIESCE) &&
                  m_async_request_id != rhs.m_async_request_id) {
         return m_async_request_id < rhs.m_async_request_id;
       }
@@ -167,9 +173,14 @@ private:
   ceph::shared_mutex m_async_request_lock;
   std::map<watch_notify::AsyncRequestId, AsyncRequest> m_async_requests;
   std::set<watch_notify::AsyncRequestId> m_async_pending;
+  std::map<watch_notify::AsyncRequestId, int> m_async_complete;
+  std::set<std::pair<utime_t,
+                     watch_notify::AsyncRequestId>> m_async_complete_expiration;
 
   ceph::mutex m_owner_client_id_lock;
   watch_notify::ClientId m_owner_client_id;
+
+  AsyncOpTracker m_async_op_tracker;
 
   void handle_register_watch(int r);
 
@@ -184,7 +195,12 @@ private:
 
   void notify_lock_owner(watch_notify::Payload *payload, Context *on_finish);
 
+  bool is_new_request(const watch_notify::AsyncRequestId &id) const;
+  bool mark_async_request_complete(const watch_notify::AsyncRequestId &id,
+                                   int r);
   Context *remove_async_request(const watch_notify::AsyncRequestId &id);
+  Context *remove_async_request(const watch_notify::AsyncRequestId &id,
+                                ceph::shared_mutex &lock);
   void schedule_async_request_timed_out(const watch_notify::AsyncRequestId &id);
   void async_request_timed_out(const watch_notify::AsyncRequestId &id);
   void notify_async_request(const watch_notify::AsyncRequestId &id,
@@ -207,7 +223,8 @@ private:
 
   Context *prepare_quiesce_request(const watch_notify::AsyncRequestId &request,
                                    C_NotifyAck *ack_ctx);
-  Context *prepare_unquiesce_request(const watch_notify::AsyncRequestId &request);
+  void prepare_unquiesce_request(const watch_notify::AsyncRequestId &request);
+  void cancel_quiesce_requests();
 
   void notify_quiesce(const watch_notify::AsyncRequestId &async_request_id,
                       size_t attempts, ProgressContext &prog_ctx,
@@ -252,6 +269,8 @@ private:
   bool handle_payload(const watch_notify::QuiescePayload& payload,
                       C_NotifyAck *ctx);
   bool handle_payload(const watch_notify::UnquiescePayload& payload,
+                      C_NotifyAck *ctx);
+  bool handle_payload(const watch_notify::MetadataUpdatePayload& payload,
                       C_NotifyAck *ctx);
   bool handle_payload(const watch_notify::UnknownPayload& payload,
                       C_NotifyAck *ctx);

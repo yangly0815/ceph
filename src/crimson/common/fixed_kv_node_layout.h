@@ -39,6 +39,8 @@ struct maybe_const_t<T, false> {
  */
 template <
   size_t CAPACITY,
+  typename Meta,
+  typename MetaInt,
   typename K,
   typename KINT,
   typename V,
@@ -47,8 +49,8 @@ template <
 class FixedKVNodeLayout {
   char *buf = nullptr;
 
-  using L = absl::container_internal::Layout<ceph_le32, KINT, VINT>;
-  static constexpr L layout{1, CAPACITY, CAPACITY};
+  using L = absl::container_internal::Layout<ceph_le32, MetaInt, KINT, VINT>;
+  static constexpr L layout{1, 1, CAPACITY, CAPACITY};
 
 public:
   template <bool is_const>
@@ -125,6 +127,11 @@ public:
 	return next->get_key();
     }
 
+    void set_val(V val) const {
+      static_assert(!is_const);
+      node->get_val_ptr()[offset] = VINT(val);
+    }
+
     V get_val() const {
       return V(node->get_val_ptr()[offset]);
     };
@@ -143,11 +150,6 @@ public:
       KINT lb;
       lb = _lb;
       node->get_key_ptr()[offset] = lb;
-    }
-
-    void set_val(V val) const {
-      static_assert(!is_const);
-      node->get_val_ptr()[offset] = VINT(val);
     }
 
     typename maybe_const_t<char, is_const>::type get_key_ptr() const {
@@ -206,7 +208,6 @@ public:
 
 public:
   class delta_buffer_t {
-    friend class FixedKVNode;
     std::vector<delta_t> buffer;
   public:
     bool empty() const {
@@ -324,6 +325,8 @@ public:
   FixedKVNodeLayout(char *buf) :
     buf(buf) {}
 
+  virtual ~FixedKVNodeLayout() = default;
+
   const_iterator begin() const {
     return const_iterator(
       this,
@@ -370,7 +373,7 @@ public:
   const_iterator lower_bound(K l) const {
     auto ret = begin();
     for (; ret != end(); ++ret) {
-      if (ret->get_key() > l)
+      if (ret->get_key() >= l)
 	break;
     }
     return ret;
@@ -399,6 +402,30 @@ public:
 
   uint16_t get_size() const {
     return *layout.template Pointer<0>(buf);
+  }
+
+  /**
+   * set_size
+   *
+   * Set size representation to match size
+   */
+  void set_size(uint16_t size) {
+    *layout.template Pointer<0>(buf) = size;
+  }
+
+  /**
+   * get_meta/set_meta
+   *
+   * Enables stashing a templated type within the layout.
+   * Cannot be modified after initial write as it is not represented
+   * in delta_t
+   */
+  Meta get_meta() const {
+    MetaInt &metaint = *layout.template Pointer<1>(buf);
+    return Meta(metaint);
+  }
+  void set_meta(const Meta &meta) {
+    *layout.template Pointer<1>(buf) = MetaInt(meta);
   }
 
   constexpr static size_t get_capacity() {
@@ -439,6 +466,10 @@ public:
     right.copy_from_foreign(right.begin(), piviter, end());
     right.set_size(end() - piviter);
 
+    auto [lmeta, rmeta] = get_meta().split_into(piviter->get_key());
+    left.set_meta(lmeta);
+    right.set_meta(rmeta);
+
     return piviter->get_key();
   }
 
@@ -463,6 +494,7 @@ public:
       right.begin(),
       right.end());
     set_size(left.get_size() + right.get_size());
+    set_meta(Meta::merge_from(left.get_meta(), right.get_meta()));
   }
 
   /**
@@ -485,7 +517,7 @@ public:
     if (total % 2 && prefer_left) {
       pivot_idx++;
     }
-    auto replacement_pivot = pivot_idx > left.get_size() ?
+    auto replacement_pivot = pivot_idx >= left.get_size() ?
       right.iter_idx(pivot_idx - left.get_size())->get_key() :
       left.iter_idx(pivot_idx)->get_key();
 
@@ -527,6 +559,10 @@ public:
       replacement_right.set_size(total - pivot_idx);
     }
 
+    auto [lmeta, rmeta] = Meta::rebalance(
+      left.get_meta(), right.get_meta(), replacement_pivot);
+    replacement_left.set_meta(lmeta);
+    replacement_right.set_meta(rmeta);
     return replacement_pivot;
   }
 
@@ -586,10 +622,10 @@ private:
    * Get pointer to start of key array
    */
   KINT *get_key_ptr() {
-    return layout.template Pointer<1>(buf);
+    return layout.template Pointer<2>(buf);
   }
   const KINT *get_key_ptr() const {
-    return layout.template Pointer<1>(buf);
+    return layout.template Pointer<2>(buf);
   }
 
   /**
@@ -598,21 +634,22 @@ private:
    * Get pointer to start of val array
    */
   VINT *get_val_ptr() {
-    return layout.template Pointer<2>(buf);
+    return layout.template Pointer<3>(buf);
   }
   const VINT *get_val_ptr() const {
-    return layout.template Pointer<2>(buf);
+    return layout.template Pointer<3>(buf);
   }
 
   /**
-   * set_size
+   * node_resolve/unresolve_vals
    *
-   * Set size representation to match size
+   * If the representation for values depends in some way on the
+   * node in which they are located, users may implement
+   * resolve/unresolve to enable copy_from_foreign to handle that
+   * transition.
    */
-  void set_size(uint16_t size) {
-    *layout.template Pointer<0>(buf) = size;
-  }
-
+  virtual void node_resolve_vals(iterator from, iterator to) const {}
+  virtual void node_unresolve_vals(iterator from, iterator to) const {}
 
   /**
    * copy_from_foreign
@@ -634,6 +671,8 @@ private:
     memcpy(
       tgt->get_key_ptr(), from_src->get_key_ptr(),
       to_src->get_key_ptr() - from_src->get_key_ptr());
+    from_src->node->node_resolve_vals(tgt, tgt + (to_src - from_src));
+    tgt->node->node_unresolve_vals(tgt, tgt + (to_src - from_src));
   }
 
   /**

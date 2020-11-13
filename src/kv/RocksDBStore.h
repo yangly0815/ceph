@@ -32,8 +32,6 @@
 enum {
   l_rocksdb_first = 34300,
   l_rocksdb_gets,
-  l_rocksdb_txns,
-  l_rocksdb_txns_sync,
   l_rocksdb_get_latency,
   l_rocksdb_submit_latency,
   l_rocksdb_submit_sync_latency,
@@ -478,11 +476,13 @@ err:
 private:
   WholeSpaceIterator get_default_cf_iterator();
 
+  using cf_deleter_t = std::function<void(rocksdb::ColumnFamilyHandle*)>;
+  using columns_t = std::map<std::string,
+			     std::unique_ptr<rocksdb::ColumnFamilyHandle,
+					     cf_deleter_t>>;
   int prepare_for_reshard(const std::string& new_sharding,
-			  std::vector<std::string>& to_process_columns,
-			  std::vector<rocksdb::ColumnFamilyHandle*>& to_process_handles);
-  int reshard_cleanup(const std::vector<std::string>& current_columns,
-		      const std::vector<rocksdb::ColumnFamilyHandle*>& current_handles);
+			  columns_t& to_process_columns);
+  int reshard_cleanup(const columns_t& current_columns);
 public:
   struct resharding_ctrl {
     size_t bytes_per_iterator = 10000000; /// amount of data to process before refreshing iterator

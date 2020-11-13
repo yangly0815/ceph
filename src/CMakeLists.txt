@@ -139,20 +139,21 @@ endif()
 
 include(SIMDExt)
 if(HAVE_INTEL)
-  set(CMAKE_ASM_COMPILER  ${PROJECT_SOURCE_DIR}/src/yasm-wrapper)
   if(APPLE)
     set(object_format "macho64")
   else()
     set(object_format "elf64")
   endif()
   set(CMAKE_ASM_FLAGS "-f ${object_format}")
+  set(CMAKE_ASM_COMPILER ${PROJECT_SOURCE_DIR}/src/nasm-wrapper)
   if(NOT WIN32)
     # The native tools might be located even when cross compiling, which
     # might not work in this case (especially when targeting Windows).
-    include(CheckYasm)
-    check_yasm_support(${object_format}
-      HAVE_GOOD_YASM_ELF64
-      HAVE_BETTER_YASM_ELF64)
+    include(CheckNasm)
+    check_nasm_support(${object_format}
+      HAVE_NASM_X64
+      HAVE_NASM_X64_AVX2
+      HAVE_NASM_X64_AVX512)
   endif()
 endif()
 
@@ -250,12 +251,6 @@ if(WITH_CEPHFS_JAVA)
   add_subdirectory(java)
 endif()
 
-# Python stuff
-option(WITH_PYTHON2 "build python2 bindings" OFF)
-if(WITH_PYTHON2)
-  message(FATAL_ERROR "Python 2 is not supported anymore")
-endif()
-
 # sort out which allocator to use
 if(ALLOCATOR STREQUAL "tcmalloc")
   set(ALLOC_LIBS gperftools::tcmalloc)
@@ -294,7 +289,8 @@ list(APPEND mds_files
   mds/FSMapUser.cc
   mds/inode_backtrace.cc
   mds/mdstypes.cc
-  mds/flock.cc)
+  mds/flock.cc
+  mds/cephfs_features.cc)
 
 add_subdirectory(json_spirit)
 
@@ -310,6 +306,16 @@ else()
   include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/src/fmt/include")
 endif()
 
+# in osd/PeeringState.h, the number of elements in PeeringState::Active::reactions
+# is now 21 which exceeds the default value of BOOST_MPL_LIMIT_VECTOR_SIZE, which
+# is 20. so we need to override it. see
+# https://www.boost.org/doc/libs/1_74_0/libs/mpl/doc/refmanual/limit-list-size.html
+# link with this library, if your code includes osd/PeeringState.h (indirectly)
+add_library(Boost::MPL INTERFACE IMPORTED)
+set_target_properties(Boost::MPL PROPERTIES
+  INTERFACE_COMPILE_DEFINITIONS
+    "BOOST_MPL_CFG_NO_PREPROCESSED_HEADERS;BOOST_MPL_LIMIT_LIST_SIZE=30")
+
 if(WITH_SEASTAR)
   find_package(c-ares 1.13.0 QUIET)
   if(NOT c-ares_FOUND)
@@ -322,6 +328,7 @@ if(WITH_SEASTAR)
       _find_package(${ARGV})
     endif()
   endmacro ()
+  set(Seastar_API_LEVEL "6" CACHE STRING "" FORCE)
   set(Seastar_HWLOC OFF CACHE BOOL "" FORCE)
   set(Seastar_STD_OPTIONAL_VARIANT_STRINGVIEW ON CACHE BOOL "" FORCE)
   if(Seastar_DPDK)
@@ -331,7 +338,14 @@ if(WITH_SEASTAR)
       build_dpdk(${CMAKE_BINARY_DIR}/src/dpdk)
     endif()
   endif()
-  set(Seastar_CXX_FLAGS "-Wno-error;-Wno-sign-compare;-Wno-attributes;-Wno-pessimizing-move;-Wno-address-of-packed-member;-Wno-non-virtual-dtor" CACHE STRING "" FORCE)
+  list(APPEND Seastar_CXX_FLAGS
+    "-Wno-error"
+    "-Wno-sign-compare"
+    "-Wno-attributes"
+    "-Wno-pessimizing-move"
+    "-Wno-address-of-packed-member"
+    "-Wno-non-virtual-dtor")
+  set(Seastar_CXX_FLAGS "${Seastar_CXX_FLAGS}" CACHE STRING "" FORCE)
   add_subdirectory(seastar)
   # create the directory so cmake won't complain when looking at the imported
   # target: Seastar exports this directory created at build-time
@@ -434,7 +448,7 @@ if(WITH_DPDK)
 endif()
 
 if(WIN32)
-  list(APPEND ceph_common_deps ws2_32 mswsock)
+  list(APPEND ceph_common_deps ws2_32 mswsock iphlpapi bcrypt)
   list(APPEND ceph_common_deps dlfcn_win32)
 endif()
 
@@ -495,7 +509,7 @@ endif(${WITH_LTTNG})
 
 add_subdirectory(global)
 
-add_subdirectory(lua)
+find_package(Lua REQUIRED)
 
 # rados object classes
 add_subdirectory(cls)
@@ -765,11 +779,9 @@ if(WITH_RBD)
   add_subdirectory(rbd_replay)
 endif(WITH_RBD)
 
-if(WITH_BOOST_CONTEXT)
-  set(SPAWN_BUILD_TESTS OFF CACHE INTERNAL "disable building of spawn unit tests")
-  set(SPAWN_INSTALL OFF CACHE INTERNAL "disable installation of spawn headers")
-  add_subdirectory(spawn)
-endif()
+set(SPAWN_BUILD_TESTS OFF CACHE INTERNAL "disable building of spawn unit tests")
+set(SPAWN_INSTALL OFF CACHE INTERNAL "disable installation of spawn headers")
+add_subdirectory(spawn)
 
 # RadosGW
 if(WITH_KVS)
@@ -880,12 +892,22 @@ if(DOXYGEN_FOUND)
   set(DOXYGEN_FILE_PATTERNS *.cc *.c *.cpp *.C *.cxx *.c++ *.CC *.H *.h *.hh *.hpp)
   set(DOXYGEN_SOURCE_BROWSER YES)
   set(DOXYGEN_WARN_IF_UNDOCUMENTED NO)
-  set(DOXYGEN_CLANG_ASSISTED_PARSING YES)
-  set(DOXYGEN_CLANG_DATABASE_PATH .)
+  # enabling clang slows down doxygen significantly
+  set(DOXYGEN_CLANG_ASSISTED_PARSING NO)
+  set(DOXYGEN_CLANG_DATABASE_PATH "${PROJECT_BINARY_DIR}")
   set(DOXYGEN_BUILTIN_STL_SUPPORT YES)
   set(DOXYGEN_RECURSIVE YES)
   set(DOXYGEN_QUIET YES)
   set(DOXYGEN_GENERATE_LATEX NO)
+  set(DOXYGEN_GENERATE_XML NO)
+  set(DOXYGEN_GENERATE_HTML YES)
+  set(DOXYGEN_PROJECT_NAME Ceph)
+  set(DOXYGEN_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/build-doc/doxygen")
+  set(DOXYGEN_STRIP_FROM_PATH "src/")
+  set(DOXYGEN_STRIP_FROM_INC_PATH "src/include")
+  set(DOXYGEN_JAVADOC_AUTOBRIEF YES)
+  set(DOXYGEN_HAVE_DOT NO)
+  set(DOXYGEN_VERBATIM_HEADERS YES)
   doxygen_add_docs(doxygen
     auth
     client
@@ -906,7 +928,6 @@ if(DOXYGEN_FOUND)
     libradosstriper
     librbd
     log
-    lua
     mds
     messages
     mgr

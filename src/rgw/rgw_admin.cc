@@ -39,6 +39,7 @@ extern "C" {
 #include "rgw_rados.h"
 #include "rgw_acl.h"
 #include "rgw_acl_s3.h"
+#include "rgw_datalog.h"
 #include "rgw_lc.h"
 #include "rgw_log.h"
 #include "rgw_formats.h"
@@ -58,11 +59,12 @@ extern "C" {
 #include "rgw_pubsub.h"
 #include "rgw_sync_module_pubsub.h"
 #include "rgw_bucket_sync.h"
+#include "rgw_sync_checkpoint.h"
+#include "rgw_lua.h"
 
 #include "services/svc_sync_modules.h"
 #include "services/svc_cls.h"
 #include "services/svc_bilog_rados.h"
-#include "services/svc_datalog_rados.h"
 #include "services/svc_mdlog.h"
 #include "services/svc_meta_be_otp.h"
 #include "services/svc_zone.h"
@@ -134,6 +136,7 @@ void usage()
   cout << "  bucket chown               link bucket to specified user and update its object ACLs\n";
   cout << "  bucket reshard             reshard bucket\n";
   cout << "  bucket rewrite             rewrite all objects in the specified bucket\n";
+  cout << "  bucket sync checkpoint     poll a bucket's sync status until it catches up to its remote\n";
   cout << "  bucket sync disable        disable bucket sync\n";
   cout << "  bucket sync enable         enable bucket sync\n";
   cout << "  bucket radoslist           list rados objects backing bucket's objects\n";
@@ -234,8 +237,7 @@ void usage()
   cout << "  metadata rm                remove metadata info\n";
   cout << "  metadata list              list metadata info\n";
   cout << "  mdlog list                 list metadata log\n";
-  cout << "  mdlog trim                 trim metadata log (use start-date, end-date or\n";
-  cout << "                             start-marker, end-marker)\n";
+  cout << "  mdlog trim                 trim metadata log (use marker)\n";
   cout << "  mdlog status               read metadata log status\n";
   cout << "  bilog list                 list bucket index log\n";
   cout << "  bilog trim                 trim bucket index log (use start-marker, end-marker)\n";
@@ -278,8 +280,12 @@ void usage()
   cout << "  subscription rm            remove a pubsub subscription\n";
   cout << "  subscription pull          show events in a pubsub subscription\n";
   cout << "  subscription ack           ack (remove) an events in a pubsub subscription\n";
+  cout << "  script put                 upload a lua script to a context\n";
+  cout << "  script get                 get the lua script of a context\n";
+  cout << "  script rm                  remove the lua scripts of a context\n";
   cout << "options:\n";
   cout << "   --tenant=<tenant>         tenant name\n";
+  cout << "   --user_ns=<namespace>     namespace of user (oidc in case of users authenticated with oidc provider)\n";
   cout << "   --uid=<id>                user id\n";
   cout << "   --new-uid=<id>            new user id\n";
   cout << "   --subuser=<name>          subuser name\n";
@@ -426,6 +432,8 @@ void usage()
   cout << "   --topic                   bucket notifications/pubsub topic name\n";
   cout << "   --subscription            pubsub subscription name\n";
   cout << "   --event-id                event id in a pubsub subscription\n";
+  cout << "\nScript options:\n";
+  cout << "   --context                 context in which the script runs. one of: preRequest, postRequest\n";
   cout << "\n";
   generic_client_usage();
 }
@@ -588,6 +596,7 @@ enum class OPT {
   BUCKET_UNLINK,
   BUCKET_STATS,
   BUCKET_CHECK,
+  BUCKET_SYNC_CHECKPOINT,
   BUCKET_SYNC_INFO,
   BUCKET_SYNC_STATUS,
   BUCKET_SYNC_MARKERS,
@@ -756,6 +765,9 @@ enum class OPT {
   PUBSUB_SUB_RM,
   PUBSUB_SUB_PULL,
   PUBSUB_EVENT_RM,
+  SCRIPT_PUT,
+  SCRIPT_GET,
+  SCRIPT_RM,
 };
 
 }
@@ -785,6 +797,7 @@ static SimpleCmd::Commands all_cmds = {
   { "bucket unlink", OPT::BUCKET_UNLINK },
   { "bucket stats", OPT::BUCKET_STATS },
   { "bucket check", OPT::BUCKET_CHECK },
+  { "bucket sync checkpoint", OPT::BUCKET_SYNC_CHECKPOINT },
   { "bucket sync info", OPT::BUCKET_SYNC_INFO },
   { "bucket sync status", OPT::BUCKET_SYNC_STATUS },
   { "bucket sync markers", OPT::BUCKET_SYNC_MARKERS },
@@ -968,6 +981,9 @@ static SimpleCmd::Commands all_cmds = {
   { "subscription rm", OPT::PUBSUB_SUB_RM },
   { "subscription pull", OPT::PUBSUB_SUB_PULL },
   { "subscription ack", OPT::PUBSUB_EVENT_RM },
+  { "script put", OPT::SCRIPT_PUT },
+  { "script get", OPT::SCRIPT_GET },
+  { "script rm", OPT::SCRIPT_RM },
 };
 
 static SimpleCmd::Aliases cmd_aliases = {
@@ -1203,24 +1219,6 @@ static int read_decode_json(const string& infile, T& t, K *k)
   return 0;
 }
 
-static int parse_date_str(const string& date_str, utime_t& ut)
-{
-  uint64_t epoch = 0;
-  uint64_t nsec = 0;
-
-  if (!date_str.empty()) {
-    int ret = utime_t::parse_date(date_str, &epoch, &nsec);
-    if (ret < 0) {
-      cerr << "ERROR: failed to parse date: " << date_str << std::endl;
-      return -EINVAL;
-    }
-  }
-
-  ut = utime_t(epoch, nsec);
-
-  return 0;
-}
-
 template <class T>
 static bool decode_dump(const char *field_name, bufferlist& bl, Formatter *f)
 {
@@ -1342,28 +1340,19 @@ int set_user_quota(OPT opt_cmd, RGWUser& user, RGWUserAdminOpState& op_state, in
   return 0;
 }
 
-int check_min_obj_stripe_size(rgw::sal::RGWRadosStore *store, RGWBucketInfo& bucket_info, rgw_obj& obj, uint64_t min_stripe_size, bool *need_rewrite)
+int check_min_obj_stripe_size(rgw::sal::RGWRadosStore *store, RGWBucketInfo& bucket_info, rgw::sal::RGWObject* obj, uint64_t min_stripe_size, bool *need_rewrite)
 {
-  map<string, bufferlist> attrs;
-  uint64_t obj_size;
-
   RGWObjectCtx obj_ctx(store);
-  RGWRados::Object op_target(store->getRados(), bucket_info, obj_ctx, obj);
-  RGWRados::Object::Read read_op(&op_target);
-
-  read_op.params.attrs = &attrs;
-  read_op.params.obj_size = &obj_size;
-
-  int ret = read_op.prepare(null_yield);
+  int ret = obj->get_obj_attrs(&obj_ctx, null_yield);
   if (ret < 0) {
     lderr(store->ctx()) << "ERROR: failed to stat object, returned error: " << cpp_strerror(-ret) << dendl;
     return ret;
   }
 
   map<string, bufferlist>::iterator iter;
-  iter = attrs.find(RGW_ATTR_MANIFEST);
-  if (iter == attrs.end()) {
-    *need_rewrite = (obj_size >= min_stripe_size);
+  iter = obj->get_attrs().find(RGW_ATTR_MANIFEST);
+  if (iter == obj->get_attrs().end()) {
+    *need_rewrite = (obj->get_obj_size() >= min_stripe_size);
     return 0;
   }
 
@@ -2242,31 +2231,6 @@ std::ostream& operator<<(std::ostream& out, const indented& h) {
   return out << std::setw(h.w) << h.header << std::setw(1) << ' ';
 }
 
-static int remote_bilog_markers(rgw::sal::RGWRadosStore *store, const RGWZone& source,
-                                RGWRESTConn *conn, const RGWBucketInfo& info,
-                                BucketIndexShardsManager *markers)
-{
-  const auto instance_key = info.bucket.get_key();
-  const rgw_http_param_pair params[] = {
-    { "type" , "bucket-index" },
-    { "bucket-instance", instance_key.c_str() },
-    { "info" , nullptr },
-    { nullptr, nullptr }
-  };
-  rgw_bucket_index_marker_info result;
-  int r = conn->get_json_resource("/admin/log/", params, result);
-  if (r < 0) {
-    lderr(store->ctx()) << "failed to fetch remote log markers: " << cpp_strerror(r) << dendl;
-    return r;
-  }
-  r = markers->from_string(result.max_marker, -1);
-  if (r < 0) {
-    lderr(store->ctx()) << "failed to decode remote log markers" << dendl;
-    return r;
-  }
-  return 0;
-}
-
 static int bucket_source_sync_status(rgw::sal::RGWRadosStore *store, const RGWZone& zone,
                                      const RGWZone& source, RGWRESTConn *conn,
                                      const RGWBucketInfo& bucket_info,
@@ -2329,7 +2293,7 @@ static int bucket_source_sync_status(rgw::sal::RGWRadosStore *store, const RGWZo
   out << indented{width} << "incremental sync: " << num_inc << "/" << total_shards << " shards\n";
 
   BucketIndexShardsManager remote_markers;
-  r = remote_bilog_markers(store, source, conn, source_bucket_info, &remote_markers);
+  r = rgw_read_remote_bilog_info(conn, source_bucket, remote_markers, null_yield);
   if (r < 0) {
     lderr(store->ctx()) << "failed to read remote log: " << cpp_strerror(r) << dendl;
     return r;
@@ -2801,18 +2765,14 @@ static int scan_totp(CephContext *cct, ceph::real_time& now, rados::cls::otp::ot
   return -ENOENT;
 }
 
-static int trim_sync_error_log(int shard_id, const ceph::real_time& start_time,
-                               const ceph::real_time& end_time,
-                               const string& start_marker, const string& end_marker,
-                               int delay_ms)
+static int trim_sync_error_log(int shard_id, const string& marker, int delay_ms)
 {
   auto oid = RGWSyncErrorLogger::get_shard_oid(RGW_SYNC_ERROR_LOG_SHARD_PREFIX,
                                                shard_id);
   // call cls_log_trim() until it returns -ENODATA
   for (;;) {
-    int ret = store->svc()->cls->timelog.trim(oid, start_time, end_time,
-                                           start_marker, end_marker, nullptr,
-                                           null_yield);
+    int ret = store->svc()->cls->timelog.trim(oid, {}, {}, {}, marker, nullptr,
+					      null_yield);
     if (ret == -ENODATA) {
       return 0;
     }
@@ -3057,6 +3017,7 @@ int main(int argc, const char **argv)
 
   rgw_user user_id;
   string tenant;
+  string user_ns;
   rgw_user new_user_id;
   std::string access_key, secret_key, user_email, display_name;
   std::string bucket_name, pool_name, object;
@@ -3100,8 +3061,8 @@ int main(int argc, const char **argv)
   map<int, string> temp_url_keys;
   string bucket_id;
   string new_bucket_name;
-  Formatter *formatter = NULL;
-  Formatter *zone_formatter = nullptr;
+  std::unique_ptr<Formatter> formatter;
+  std::unique_ptr<Formatter> zone_formatter;
   int purge_data = false;
   int pretty_format = false;
   int show_log_entries = true;
@@ -3209,6 +3170,8 @@ int main(int argc, const char **argv)
   string sub_name;
   string event_id;
 
+  std::optional<std::string> str_script_ctx;
+
   std::optional<string> opt_group_id;
   std::optional<string> opt_status;
   std::optional<string> opt_flow_type;
@@ -3245,6 +3208,8 @@ int main(int argc, const char **argv)
   std::optional<int> opt_priority;
   std::optional<string> opt_mode;
   std::optional<rgw_user> opt_dest_owner;
+  ceph::timespan opt_retry_delay_ms = std::chrono::milliseconds(2000);
+  ceph::timespan opt_timeout_sec = std::chrono::seconds(60);
 
   SimpleCmd cmd(all_cmds, cmd_aliases);
 
@@ -3262,6 +3227,8 @@ int main(int argc, const char **argv)
     } else if (ceph_argparse_witharg(args, i, &val, "--tenant", (char*)NULL)) {
       tenant = val;
       opt_tenant = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--user_ns", (char*)NULL)) {
+      user_ns = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--access-key", (char*)NULL)) {
       access_key = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--subuser", (char*)NULL)) {
@@ -3657,8 +3624,14 @@ int main(int argc, const char **argv)
     } else if (ceph_argparse_witharg(args, i, &val, "--dest-owner", (char*)NULL)) {
       opt_dest_owner.emplace(val);
       opt_dest_owner = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--retry-delay-ms", (char*)NULL)) {
+      opt_retry_delay_ms = std::chrono::milliseconds(atoi(val.c_str()));
+    } else if (ceph_argparse_witharg(args, i, &val, "--timeout-sec", (char*)NULL)) {
+      opt_timeout_sec = std::chrono::seconds(atoi(val.c_str()));
     } else if (ceph_argparse_binary_flag(args, i, &detail, NULL, "--detail", (char*)NULL)) {
       // do nothing
+    } else if (ceph_argparse_witharg(args, i, &val, "--context", (char*)NULL)) {
+      str_script_ctx = val;
     } else if (strncmp(*i, "-", 1) == 0) {
       cerr << "ERROR: invalid flag " << *i << std::endl;
       return EINVAL;
@@ -3740,6 +3713,11 @@ int main(int argc, const char **argv)
       }
       user_id.tenant = tenant;
     }
+    if (user_ns.empty()) {
+      user_ns = user_id.ns;
+    } else {
+      user_id.ns = user_ns;
+    }
 
     if (!new_user_id.empty() && !tenant.empty()) {
       new_user_id.tenant = tenant;
@@ -3763,24 +3741,27 @@ int main(int argc, const char **argv)
   }
 
   if (format ==  "xml")
-    formatter = new XMLFormatter(pretty_format);
+    formatter = make_unique<XMLFormatter>(new XMLFormatter(pretty_format));
   else if (format == "json")
-    formatter = new JSONFormatter(pretty_format);
+    formatter = make_unique<JSONFormatter>(new JSONFormatter(pretty_format));
   else {
     cerr << "unrecognized format: " << format << std::endl;
     exit(1);
   }
 
-  zone_formatter = new JSONFormatter_PrettyZone(pretty_format);
+  zone_formatter = std::make_unique<JSONFormatter_PrettyZone>(new JSONFormatter_PrettyZone(pretty_format));
 
   realm_name = g_conf()->rgw_realm;
   zone_name = g_conf()->rgw_zone;
   zonegroup_name = g_conf()->rgw_zonegroup;
 
-  RGWStreamFlusher f(formatter, cout);
+  RGWStreamFlusher f(formatter.get(), cout);
 
   // not a raw op if 'period update' needs to commit to master
   bool raw_period_update = opt_cmd == OPT::PERIOD_UPDATE && !commit;
+  // not a raw op if 'period pull' needs to read zone/period configuration
+  bool raw_period_pull = opt_cmd == OPT::PERIOD_PULL && !url.empty();
+
   std::set<OPT> raw_storage_ops_list = {OPT::ZONEGROUP_ADD, OPT::ZONEGROUP_CREATE, OPT::ZONEGROUP_DELETE,
 			 OPT::ZONEGROUP_GET, OPT::ZONEGROUP_LIST,
                          OPT::ZONEGROUP_SET, OPT::ZONEGROUP_DEFAULT,
@@ -3798,7 +3779,6 @@ int main(int argc, const char **argv)
 			 OPT::ZONE_PLACEMENT_GET,
 			 OPT::REALM_CREATE,
 			 OPT::PERIOD_DELETE, OPT::PERIOD_GET,
-			 OPT::PERIOD_PULL,
 			 OPT::PERIOD_GET_CURRENT, OPT::PERIOD_LIST,
 			 OPT::GLOBAL_QUOTA_GET, OPT::GLOBAL_QUOTA_SET,
 			 OPT::GLOBAL_QUOTA_ENABLE, OPT::GLOBAL_QUOTA_DISABLE,
@@ -3814,6 +3794,7 @@ int main(int argc, const char **argv)
 			 OPT::BUCKETS_LIST,
 			 OPT::BUCKET_LIMIT_CHECK,
 			 OPT::BUCKET_STATS,
+			 OPT::BUCKET_SYNC_CHECKPOINT,
 			 OPT::BUCKET_SYNC_INFO,
 			 OPT::BUCKET_SYNC_STATUS,
 			 OPT::BUCKET_SYNC_MARKERS,
@@ -3869,11 +3850,12 @@ int main(int argc, const char **argv)
        OPT::PUBSUB_TOPIC_GET,
        OPT::PUBSUB_SUB_GET,
        OPT::PUBSUB_SUB_PULL,
+       OPT::SCRIPT_GET,
   };
 
 
   bool raw_storage_op = (raw_storage_ops_list.find(opt_cmd) != raw_storage_ops_list.end() ||
-                         raw_period_update);
+                         raw_period_update || raw_period_pull);
   bool need_cache = readonly_ops_list.find(opt_cmd) == readonly_ops_list.end();
 
   if (raw_storage_op) {
@@ -3955,7 +3937,7 @@ int main(int argc, const char **argv)
 	  cerr << "period init failed: " << cpp_strerror(-ret) << std::endl;
 	  return -ret;
 	}
-	encode_json("period", period, formatter);
+	encode_json("period", period, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -3966,7 +3948,7 @@ int main(int argc, const char **argv)
 	  return -ret;
 	}
 	formatter->open_object_section("period_get_current");
-	encode_json("current_period", period_id, formatter);
+	encode_json("current_period", period_id, formatter.get());
 	formatter->close_section();
 	formatter->flush(cout);
       }
@@ -3980,7 +3962,7 @@ int main(int argc, const char **argv)
 	  return -ret;
 	}
 	formatter->open_object_section("periods_list");
-	encode_json("periods", periods, formatter);
+	encode_json("periods", periods, formatter.get());
 	formatter->close_section();
 	formatter->flush(cout);
       }
@@ -3989,7 +3971,7 @@ int main(int argc, const char **argv)
       {
         int ret = update_period(realm_id, realm_name, period_id, period_epoch,
                                 commit, remote, url, access_key, secret_key,
-                                formatter, yes_i_really_mean_it);
+                                formatter.get(), yes_i_really_mean_it);
 	if (ret < 0) {
 	  return -ret;
 	}
@@ -4035,7 +4017,7 @@ int main(int argc, const char **argv)
           return -ret;
         }
 
-        encode_json("period", period, formatter);
+        encode_json("period", period, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -4078,16 +4060,16 @@ int main(int argc, const char **argv)
           set_quota_info(period_config.bucket_quota, opt_cmd,
                          max_size, max_objects,
                          have_max_size, have_max_objects);
-          encode_json("bucket quota", period_config.bucket_quota, formatter);
+          encode_json("bucket quota", period_config.bucket_quota, formatter.get());
         } else if (quota_scope == "user") {
           set_quota_info(period_config.user_quota, opt_cmd,
                          max_size, max_objects,
                          have_max_size, have_max_objects);
-          encode_json("user quota", period_config.user_quota, formatter);
+          encode_json("user quota", period_config.user_quota, formatter.get());
         } else if (quota_scope.empty() && opt_cmd == OPT::GLOBAL_QUOTA_GET) {
           // if no scope is given for GET, print both
-          encode_json("bucket quota", period_config.bucket_quota, formatter);
-          encode_json("user quota", period_config.user_quota, formatter);
+          encode_json("bucket quota", period_config.bucket_quota, formatter.get());
+          encode_json("user quota", period_config.user_quota, formatter.get());
         } else {
           cerr << "ERROR: invalid quota scope specification. Please specify "
               "either --quota-scope=bucket, or --quota-scope=user" << std::endl;
@@ -4137,7 +4119,7 @@ int main(int argc, const char **argv)
           }
         }
 
-	encode_json("realm", realm, formatter);
+	encode_json("realm", realm, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4173,7 +4155,7 @@ int main(int argc, const char **argv)
           }
 	  return -ret;
 	}
-	encode_json("realm", realm, formatter);
+	encode_json("realm", realm, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4207,8 +4189,8 @@ int main(int argc, const char **argv)
 	  return -ret;
 	}
 	formatter->open_object_section("realms_list");
-	encode_json("default_info", default_id, formatter);
-	encode_json("realms", realms, formatter);
+	encode_json("default_info", default_id, formatter.get());
+	encode_json("realms", realms, formatter.get());
 	formatter->close_section();
 	formatter->flush(cout);
       }
@@ -4226,8 +4208,8 @@ int main(int argc, const char **argv)
 	  return -ret;
 	}
 	formatter->open_object_section("realm_periods_list");
-	encode_json("current_period", period_id, formatter);
-	encode_json("periods", periods, formatter);
+	encode_json("current_period", period_id, formatter.get());
+	encode_json("periods", periods, formatter.get());
 	formatter->close_section();
 	formatter->flush(cout);
       }
@@ -4306,7 +4288,7 @@ int main(int argc, const char **argv)
             cerr << "failed to set realm " << realm_name << " as default: " << cpp_strerror(-ret) << std::endl;
           }
         }
-	encode_json("realm", realm, formatter);
+	encode_json("realm", realm, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4395,7 +4377,7 @@ int main(int argc, const char **argv)
           }
         }
 
-        encode_json("realm", realm, formatter);
+        encode_json("realm", realm, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -4455,7 +4437,7 @@ int main(int argc, const char **argv)
 	  return -ret;
 	}
 
-        encode_json("zonegroup", zonegroup, formatter);
+        encode_json("zonegroup", zonegroup, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -4487,7 +4469,7 @@ int main(int argc, const char **argv)
           }
         }
 
-	encode_json("zonegroup", zonegroup, formatter);
+	encode_json("zonegroup", zonegroup, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4540,7 +4522,7 @@ int main(int argc, const char **argv)
 	  return -ret;
 	}
 
-	encode_json("zonegroup", zonegroup, formatter);
+	encode_json("zonegroup", zonegroup, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4565,8 +4547,8 @@ int main(int argc, const char **argv)
 	  cerr << "could not determine default zonegroup: " << cpp_strerror(-ret) << std::endl;
 	}
 	formatter->open_object_section("zonegroups_list");
-	encode_json("default_info", default_zonegroup, formatter);
-	encode_json("zonegroups", zonegroups, formatter);
+	encode_json("default_info", default_zonegroup, formatter.get());
+	encode_json("zonegroups", zonegroups, formatter.get());
 	formatter->close_section();
 	formatter->flush(cout);
       }
@@ -4638,7 +4620,7 @@ int main(int argc, const char **argv)
           }
         }
 
-        encode_json("zonegroup", zonegroup, formatter);
+        encode_json("zonegroup", zonegroup, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -4685,7 +4667,7 @@ int main(int argc, const char **argv)
           }
         }
 
-	encode_json("zonegroup", zonegroup, formatter);
+	encode_json("zonegroup", zonegroup, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4723,7 +4705,7 @@ int main(int argc, const char **argv)
           return -ret;
         }
 
-        encode_json("zonegroup", zonegroup, formatter);
+        encode_json("zonegroup", zonegroup, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -4759,7 +4741,7 @@ int main(int argc, const char **argv)
 	  return -ret;
 	}
 
-	encode_json("placement_targets", zonegroup.placement_targets, formatter);
+	encode_json("placement_targets", zonegroup.placement_targets, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4782,7 +4764,7 @@ int main(int argc, const char **argv)
 	  cerr << "failed to find a zonegroup placement target named '" << placement_id << "'" << std::endl;
 	  return -ENOENT;
 	}
-	encode_json("placement_targets", p->second, formatter);
+	encode_json("placement_targets", p->second, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -4858,7 +4840,7 @@ int main(int argc, const char **argv)
           return -ret;
         }
 
-        encode_json("placement_targets", zonegroup.placement_targets, formatter);
+        encode_json("placement_targets", zonegroup.placement_targets, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -4933,7 +4915,7 @@ int main(int argc, const char **argv)
           }
         }
 
-	encode_json("zone", zone, formatter);
+	encode_json("zone", zone, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -5010,7 +4992,7 @@ int main(int argc, const char **argv)
 	  cerr << "unable to initialize zone: " << cpp_strerror(-ret) << std::endl;
 	  return -ret;
 	}
-	encode_json("zone", zone, formatter);
+	encode_json("zone", zone, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -5093,7 +5075,7 @@ int main(int argc, const char **argv)
           }
         }
 
-	encode_json("zone", zone, formatter);
+	encode_json("zone", zone, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -5118,8 +5100,8 @@ int main(int argc, const char **argv)
 	  cerr << "could not determine default zone: " << cpp_strerror(-ret) << std::endl;
 	}
 	formatter->open_object_section("zones_list");
-	encode_json("default_info", default_zone, formatter);
-	encode_json("zones", zones, formatter);
+	encode_json("default_info", default_zone, formatter.get());
+	encode_json("zones", zones, formatter.get());
 	formatter->close_section();
 	formatter->flush(cout);
       }
@@ -5220,7 +5202,7 @@ int main(int argc, const char **argv)
           }
         }
 
-        encode_json("zone", zone, formatter);
+        encode_json("zone", zone, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -5364,7 +5346,7 @@ int main(int argc, const char **argv)
           return -ret;
         }
 
-        encode_json("zone", zone, formatter);
+        encode_json("zone", zone, formatter.get());
         formatter->flush(cout);
       }
       break;
@@ -5376,7 +5358,7 @@ int main(int argc, const char **argv)
 	  cerr << "unable to initialize zone: " << cpp_strerror(-ret) << std::endl;
 	  return -ret;
 	}
-	encode_json("placement_pools", zone.placement_pools, formatter);
+	encode_json("placement_pools", zone.placement_pools, formatter.get());
 	formatter->flush(cout);
       }
       break;
@@ -5398,7 +5380,7 @@ int main(int argc, const char **argv)
 	  cerr << "ERROR: zone placement target '" << placement_id << "' not found" << std::endl;
 	  return -ENOENT;
 	}
-	encode_json("placement_pools", p->second, formatter);
+	encode_json("placement_pools", p->second, formatter.get());
 	formatter->flush(cout);
       }
     default:
@@ -5711,7 +5693,7 @@ int main(int argc, const char **argv)
     {
       int ret = update_period(realm_id, realm_name, period_id, period_epoch,
                               commit, remote, url, access_key, secret_key,
-                              formatter, yes_i_really_mean_it);
+                              formatter.get(), yes_i_really_mean_it);
       if (ret < 0) {
 	return -ret;
       }
@@ -5739,7 +5721,7 @@ int main(int argc, const char **argv)
         return -ret;
       }
 
-      encode_json("period", period, formatter);
+      encode_json("period", period, formatter.get());
       formatter->flush(cout);
     }
     return 0;
@@ -5766,7 +5748,7 @@ int main(int argc, const char **argv)
       if (ret < 0) {
         return -ret;
       }
-      show_role_info(role, formatter);
+      show_role_info(role, formatter.get());
       return 0;
     }
   case OPT::ROLE_DELETE:
@@ -5794,7 +5776,7 @@ int main(int argc, const char **argv)
       if (ret < 0) {
         return -ret;
       }
-      show_role_info(role, formatter);
+      show_role_info(role, formatter.get());
       return 0;
     }
   case OPT::ROLE_MODIFY:
@@ -5837,7 +5819,7 @@ int main(int argc, const char **argv)
       if (ret < 0) {
         return -ret;
       }
-      show_roles_info(result, formatter);
+      show_roles_info(result, formatter.get());
       return 0;
     }
   case OPT::ROLE_POLICY_PUT:
@@ -5890,7 +5872,7 @@ int main(int argc, const char **argv)
         return -ret;
       }
       std::vector<string> policy_names = role.get_role_policy_names();
-      show_policy_names(policy_names, formatter);
+      show_policy_names(policy_names, formatter.get());
       return 0;
     }
   case OPT::ROLE_POLICY_GET:
@@ -5914,7 +5896,7 @@ int main(int argc, const char **argv)
       if (ret < 0) {
         return -ret;
       }
-      show_perm_policy(perm_policy, formatter);
+      show_perm_policy(perm_policy, formatter.get());
       return 0;
     }
   case OPT::ROLE_POLICY_DELETE:
@@ -5956,7 +5938,7 @@ int main(int argc, const char **argv)
       cerr << "could not fetch user info: " << err_msg << std::endl;
       return -ret;
     }
-    show_user_info(info, formatter);
+    show_user_info(info, formatter.get());
   }
 
   if (opt_cmd == OPT::POLICY) {
@@ -6037,10 +6019,17 @@ int main(int argc, const char **argv)
         return -ret;
       }
       formatter->open_array_section("entries");
-      bool truncated;
+
+      bool truncated = false;
       int count = 0;
-      if (max_entries < 0)
-        max_entries = 1000;
+
+      static constexpr int MAX_PAGINATE_SIZE = 10000;
+      static constexpr int DEFAULT_MAX_ENTRIES = 1000;
+
+      if (max_entries < 0) {
+	max_entries = DEFAULT_MAX_ENTRIES;
+      }
+      const int paginate_size = std::min(max_entries, MAX_PAGINATE_SIZE);
 
       string prefix;
       string delim;
@@ -6060,7 +6049,10 @@ int main(int argc, const char **argv)
       list_op.params.allow_unordered = bool(allow_unordered);
 
       do {
-        ret = list_op.list_objects(max_entries - count, &result, &common_prefixes, &truncated, null_yield);
+        const int remaining = max_entries - count;
+        ret = list_op.list_objects(std::min(remaining, paginate_size),
+				   &result, &common_prefixes, &truncated,
+				   null_yield);
         if (ret < 0) {
           cerr << "ERROR: store->list_objects(): " << cpp_strerror(-ret) << std::endl;
           return -ret;
@@ -6068,9 +6060,8 @@ int main(int argc, const char **argv)
 
         count += result.size();
 
-        for (vector<rgw_bucket_dir_entry>::iterator iter = result.begin(); iter != result.end(); ++iter) {
-          rgw_bucket_dir_entry& entry = *iter;
-          encode_json("entry", entry, formatter);
+        for (const auto& entry : result) {
+          encode_json("entry", entry, formatter.get());
         }
         formatter->flush(cout);
       } while (truncated && count < max_entries);
@@ -6254,7 +6245,7 @@ int main(int argc, const char **argv)
 
         if (show_log_entries) {
 
-	  rgw_format_ops_log_entry(entry, formatter);
+	  rgw_format_ops_log_entry(entry, formatter.get());
 	  formatter->flush(cout);
         }
 next:
@@ -6435,7 +6426,7 @@ next:
       cerr << "ERROR: failed reading olh: " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }
-    encode_json("olh", olh, formatter);
+    encode_json("olh", olh, formatter.get());
     formatter->flush(cout);
   }
 
@@ -6465,8 +6456,8 @@ next:
       return -ret;
     }
     formatter->open_object_section("result");
-    encode_json("is_truncated", is_truncated, formatter);
-    encode_json("log", log, formatter);
+    encode_json("is_truncated", is_truncated, formatter.get());
+    encode_json("log", log, formatter.get());
     formatter->close_section();
     formatter->flush(cout);
   }
@@ -6499,7 +6490,7 @@ next:
       return -ret;
     }
 
-    encode_json("entry", entry, formatter);
+    encode_json("entry", entry, formatter.get());
     formatter->flush(cout);
   }
 
@@ -6577,7 +6568,7 @@ next:
         list<rgw_cls_bi_entry>::iterator iter;
         for (iter = entries.begin(); iter != entries.end(); ++iter) {
           rgw_cls_bi_entry& entry = *iter;
-          encode_json("entry", entry, formatter);
+          encode_json("entry", entry, formatter.get());
           marker = entry.idx;
         }
         formatter->flush(cout);
@@ -6710,17 +6701,18 @@ next:
       return -ret;
     }
 
-    rgw_obj obj(bucket, object);
-    obj.key.set_instance(object_version);
+    rgw::sal::RGWRadosBucket rbucket(store, bucket);
+    rgw::sal::RGWRadosObject obj(store, object, &rbucket);
+    obj.set_instance(object_version);
     bool need_rewrite = true;
     if (min_rewrite_stripe_size > 0) {
-      ret = check_min_obj_stripe_size(store, bucket_info, obj, min_rewrite_stripe_size, &need_rewrite);
+      ret = check_min_obj_stripe_size(store, bucket_info, &obj, min_rewrite_stripe_size, &need_rewrite);
       if (ret < 0) {
         ldout(store->ctx(), 0) << "WARNING: check_min_obj_stripe_size failed, r=" << ret << dendl;
       }
     }
     if (need_rewrite) {
-      ret = store->getRados()->rewrite_obj(bucket_info, obj, dpp(), null_yield);
+      ret = store->getRados()->rewrite_obj(bucket_info, &obj, dpp(), null_yield);
       if (ret < 0) {
         cerr << "ERROR: object rewrite returned: " << cpp_strerror(-ret) << std::endl;
         return -ret;
@@ -6838,11 +6830,12 @@ next:
             (end_epoch > 0 && end_epoch < (uint64_t)ut.sec())) {
           formatter->dump_string("status", "Skipped");
         } else {
-          rgw_obj obj(bucket, key);
+	  rgw::sal::RGWRadosBucket rbucket(store, bucket);
+	  rgw::sal::RGWRadosObject obj(store, key, &rbucket);
 
           bool need_rewrite = true;
           if (min_rewrite_stripe_size > 0) {
-            r = check_min_obj_stripe_size(store, bucket_info, obj, min_rewrite_stripe_size, &need_rewrite);
+            r = check_min_obj_stripe_size(store, bucket_info, &obj, min_rewrite_stripe_size, &need_rewrite);
             if (r < 0) {
               ldout(store->ctx(), 0) << "WARNING: check_min_obj_stripe_size failed, r=" << r << dendl;
             }
@@ -6850,7 +6843,7 @@ next:
           if (!need_rewrite) {
             formatter->dump_string("status", "Skipped");
           } else {
-            r = store->getRados()->rewrite_obj(bucket_info, obj, dpp(), null_yield);
+            r = store->getRados()->rewrite_obj(bucket_info, &obj, dpp(), null_yield);
             if (r == 0) {
               formatter->dump_string("status", "Success");
             } else {
@@ -6896,7 +6889,7 @@ next:
     }
 
     return br.execute(num_shards, max_entries,
-                      verbose, &cout, formatter);
+                      verbose, &cout, formatter.get());
   }
 
   if (opt_cmd == OPT::RESHARD_ADD) {
@@ -6958,7 +6951,7 @@ next:
         }
         for (auto iter=entries.begin(); iter != entries.end(); ++iter) {
           cls_rgw_reshard_entry& entry = *iter;
-          encode_json("entry", entry, formatter);
+          encode_json("entry", entry, formatter.get());
           entry.get_key(&marker);
         }
         count += entries.size();
@@ -6999,7 +6992,7 @@ next:
       return -r;
     }
 
-    show_reshard_status(status, formatter);
+    show_reshard_status(status, formatter.get());
   }
 
   if (opt_cmd == OPT::RESHARD_PROCESS) {
@@ -7122,17 +7115,17 @@ next:
       bufferlist& bl = iter->second;
       bool handled = false;
       if (iter->first == RGW_ATTR_MANIFEST) {
-        handled = decode_dump<RGWObjManifest>("manifest", bl, formatter);
+        handled = decode_dump<RGWObjManifest>("manifest", bl, formatter.get());
       } else if (iter->first == RGW_ATTR_ACL) {
-        handled = decode_dump<RGWAccessControlPolicy>("policy", bl, formatter);
+        handled = decode_dump<RGWAccessControlPolicy>("policy", bl, formatter.get());
       } else if (iter->first == RGW_ATTR_ID_TAG) {
-        handled = dump_string("tag", bl, formatter);
+        handled = dump_string("tag", bl, formatter.get());
       } else if (iter->first == RGW_ATTR_ETAG) {
-        handled = dump_string("etag", bl, formatter);
+        handled = dump_string("etag", bl, formatter.get());
       } else if (iter->first == RGW_ATTR_COMPRESSION) {
-        handled = decode_dump<RGWCompressionInfo>("compression", bl, formatter);
+        handled = decode_dump<RGWCompressionInfo>("compression", bl, formatter.get());
       } else if (iter->first == RGW_ATTR_DELETE_AT) {
-        handled = decode_dump<utime_t>("delete_at", bl, formatter);
+        handled = decode_dump<utime_t>("delete_at", bl, formatter.get());
       }
 
       if (!handled)
@@ -7141,7 +7134,7 @@ next:
 
     formatter->open_object_section("attrs");
     for (iter = other_attrs.begin(); iter != other_attrs.end(); ++iter) {
-      dump_string(iter->first.c_str(), iter->second, formatter);
+      dump_string(iter->first.c_str(), iter->second, formatter.get());
     }
     formatter->close_section();
     formatter->close_section();
@@ -7154,7 +7147,7 @@ next:
         cerr << "ERROR: need to specify bucket name" << std::endl;
         return EINVAL;
       }
-      do_check_object_locator(tenant, bucket_name, fix, remove_bad, formatter);
+      do_check_object_locator(tenant, bucket_name, fix, remove_bad, formatter.get());
     } else {
       RGWBucketAdminOp::check_index(store, bucket_op, f, null_yield);
     }
@@ -7199,7 +7192,7 @@ next:
 	cls_rgw_obj_chain& chain = info.chain;
 	for (liter = chain.objs.begin(); liter != chain.objs.end(); ++liter) {
 	  cls_rgw_obj& obj = *liter;
-          encode_json("obj", obj, formatter);
+          encode_json("obj", obj, formatter.get());
 	}
 	formatter->close_section(); // objs
 	formatter->close_section(); // obj_chain
@@ -7286,7 +7279,7 @@ next:
       return -EIO;
     }
 
-    encode_json("result", config, formatter);
+    encode_json("result", config, formatter.get());
     formatter->flush(cout);
   }
 
@@ -7407,7 +7400,7 @@ next:
       if (!extra_info){
 	formatter->dump_string("job-id",it.first);
       } else {
-	encode_json("orphan_search_state", it.second, formatter);
+	encode_json("orphan_search_state", it.second, formatter.get());
       }
     }
     formatter->close_section();
@@ -7483,17 +7476,17 @@ next:
 
     {
       Formatter::ObjectSection os(*formatter, "result");
-      encode_json("stats", stats, formatter);
+      encode_json("stats", stats, formatter.get());
       utime_t last_sync_ut(last_stats_sync);
-      encode_json("last_stats_sync", last_sync_ut, formatter);
+      encode_json("last_stats_sync", last_sync_ut, formatter.get());
       utime_t last_update_ut(last_stats_update);
-      encode_json("last_stats_update", last_update_ut, formatter);
+      encode_json("last_stats_update", last_update_ut, formatter.get());
     }
     formatter->flush(cout);
   }
 
   if (opt_cmd == OPT::METADATA_GET) {
-    int ret = store->ctl()->meta.mgr->get(metadata_key, formatter, null_yield);
+    int ret = store->ctl()->meta.mgr->get(metadata_key, formatter.get(), null_yield);
     if (ret < 0) {
       cerr << "ERROR: can't get key: " << cpp_strerror(-ret) << std::endl;
       return -ret;
@@ -7509,7 +7502,7 @@ next:
       cerr << "ERROR: failed to read input: " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }
-    ret = store->ctl()->meta.mgr->put(metadata_key, bl, null_yield, RGWMDLogSyncType::APPLY_ALWAYS);
+    ret = store->ctl()->meta.mgr->put(metadata_key, bl, null_yield, RGWMDLogSyncType::APPLY_ALWAYS, false);
     if (ret < 0) {
       cerr << "ERROR: can't put key: " << cpp_strerror(-ret) << std::endl;
       return -ret;
@@ -7564,10 +7557,10 @@ next:
     formatter->close_section();
 
     if (max_entries_specified) {
-      encode_json("truncated", truncated, formatter);
-      encode_json("count", count, formatter);
+      encode_json("truncated", truncated, formatter.get());
+      encode_json("count", count, formatter.get());
       if (truncated) {
-        encode_json("marker", store->ctl()->meta.mgr->get_marker(handle), formatter);
+        encode_json("marker", store->ctl()->meta.mgr->get_marker(handle), formatter.get());
       }
       formatter->close_section();
     }
@@ -7577,15 +7570,26 @@ next:
   }
 
   if (opt_cmd == OPT::MDLOG_LIST) {
-    utime_t start_time, end_time;
-
-    int ret = parse_date_str(start_date, start_time);
-    if (ret < 0)
-      return -ret;
-
-    ret = parse_date_str(end_date, end_time);
-    if (ret < 0)
-      return -ret;
+    if (!start_date.empty()) {
+      std::cerr << "start-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_date.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_marker.empty()) {
+      std::cerr << "end-marker not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!start_marker.empty()) {
+      if (marker.empty()) {
+	marker = start_marker;
+      } else {
+	std::cerr << "start-marker and marker not both allowed." << std::endl;
+	return -EINVAL;
+      }
+    }
 
     int i = (specified_shard_id ? shard_id : 0);
 
@@ -7604,8 +7608,7 @@ next:
       void *handle;
       list<cls_log_entry> entries;
 
-
-      meta_log->init_list_entries(i, start_time.to_real_time(), end_time.to_real_time(), marker, &handle);
+      meta_log->init_list_entries(i, {}, {}, marker, &handle);
       bool truncated;
       do {
 	  int ret = meta_log->list_entries(handle, 1000, entries, NULL, &truncated);
@@ -7616,7 +7619,7 @@ next:
 
         for (list<cls_log_entry>::iterator iter = entries.begin(); iter != entries.end(); ++iter) {
           cls_log_entry& entry = *iter;
-          store->ctl()->meta.mgr->dump_log_entry(entry, formatter);
+          store->ctl()->meta.mgr->dump_log_entry(entry, formatter.get());
         }
         formatter->flush(cout);
       } while (truncated);
@@ -7651,7 +7654,7 @@ next:
       RGWMetadataLogInfo info;
       meta_log->get_info(i, &info);
 
-      ::encode_json("info", info, formatter);
+      ::encode_json("info", info, formatter.get());
 
       if (specified_shard_id)
         break;
@@ -7683,20 +7686,31 @@ next:
   }
 
   if (opt_cmd == OPT::MDLOG_TRIM) {
-    utime_t start_time, end_time;
+    if (!start_date.empty()) {
+      std::cerr << "start-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_date.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!start_marker.empty()) {
+      std::cerr << "start-marker not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_marker.empty()) {
+      if (marker.empty()) {
+	marker = end_marker;
+      } else {
+	std::cerr << "end-marker and marker not both allowed." << std::endl;
+	return -EINVAL;
+      }
+    }
 
     if (!specified_shard_id) {
       cerr << "ERROR: shard-id must be specified for trim operation" << std::endl;
       return EINVAL;
     }
-
-    int ret = parse_date_str(start_date, start_time);
-    if (ret < 0)
-      return -ret;
-
-    ret = parse_date_str(end_date, end_time);
-    if (ret < 0)
-      return -ret;
 
     if (period_id.empty()) {
       std::cerr << "missing --period argument" << std::endl;
@@ -7706,8 +7720,7 @@ next:
 
     // trim until -ENODATA
     do {
-      ret = meta_log->trim(shard_id, start_time.to_real_time(),
-                           end_time.to_real_time(), start_marker, end_marker);
+      ret = meta_log->trim(shard_id, {}, {}, {}, marker);
     } while (ret == 0);
     if (ret < 0 && ret != -ENODATA) {
       cerr << "ERROR: meta_log->trim(): " << cpp_strerror(-ret) << std::endl;
@@ -7716,11 +7729,11 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_INFO) {
-    sync_info(opt_effective_zone_id, opt_bucket, zone_formatter);
+    sync_info(opt_effective_zone_id, opt_bucket, zone_formatter.get());
   }
 
   if (opt_cmd == OPT::SYNC_STATUS) {
-    sync_status(formatter);
+    sync_status(formatter.get());
   }
 
   if (opt_cmd == OPT::METADATA_SYNC_STATUS) {
@@ -7740,7 +7753,7 @@ next:
     }
 
     formatter->open_object_section("summary");
-    encode_json("sync_status", sync_status, formatter);
+    encode_json("sync_status", sync_status, formatter.get());
 
     uint64_t full_total = 0;
     uint64_t full_complete = 0;
@@ -7755,8 +7768,8 @@ next:
     }
 
     formatter->open_object_section("full_sync");
-    encode_json("total", full_total, formatter);
-    encode_json("complete", full_complete, formatter);
+    encode_json("total", full_total, formatter.get());
+    encode_json("complete", full_complete, formatter.get());
     formatter->close_section();
     formatter->close_section();
 
@@ -7821,10 +7834,10 @@ next:
         return -ret;
       }
       formatter->open_object_section("summary");
-      encode_json("shard_id", shard_id, formatter);
-      encode_json("marker", sync_marker, formatter);
-      encode_json("pending_buckets", pending_buckets, formatter);
-      encode_json("recovering_buckets", recovering_buckets, formatter);
+      encode_json("shard_id", shard_id, formatter.get());
+      encode_json("marker", sync_marker, formatter.get());
+      encode_json("pending_buckets", pending_buckets, formatter.get());
+      encode_json("recovering_buckets", recovering_buckets, formatter.get());
       formatter->close_section();
       formatter->flush(cout);
     } else {
@@ -7835,7 +7848,7 @@ next:
       }
 
       formatter->open_object_section("summary");
-      encode_json("sync_status", sync_status, formatter);
+      encode_json("sync_status", sync_status, formatter.get());
 
       uint64_t full_total = 0;
       uint64_t full_complete = 0;
@@ -7850,8 +7863,8 @@ next:
       }
 
       formatter->open_object_section("full_sync");
-      encode_json("total", full_total, formatter);
-      encode_json("complete", full_complete, formatter);
+      encode_json("total", full_total, formatter.get());
+      encode_json("complete", full_complete, formatter.get());
       formatter->close_section();
       formatter->close_section();
 
@@ -7948,6 +7961,45 @@ next:
     }
   }
 
+  if (opt_cmd == OPT::BUCKET_SYNC_CHECKPOINT) {
+    std::optional<rgw_zone_id> opt_source_zone;
+    if (!source_zone.empty()) {
+      opt_source_zone = source_zone;
+    }
+    if (bucket_name.empty()) {
+      cerr << "ERROR: bucket not specified" << std::endl;
+      return EINVAL;
+    }
+    RGWBucketInfo bucket_info;
+    rgw_bucket bucket;
+    int ret = init_bucket(tenant, bucket_name, bucket_id, bucket_info, bucket);
+    if (ret < 0) {
+      return -ret;
+    }
+
+    if (!store->ctl()->bucket->bucket_imports_data(bucket_info.bucket, null_yield)) {
+      std::cout << "Sync is disabled for bucket " << bucket_name << std::endl;
+      return 0;
+    }
+
+    RGWBucketSyncPolicyHandlerRef handler;
+    ret = store->ctl()->bucket->get_sync_policy_handler(std::nullopt, bucket, &handler, null_yield);
+    if (ret < 0) {
+      std::cerr << "ERROR: failed to get policy handler for bucket ("
+          << bucket_info.bucket << "): r=" << ret << ": " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+
+    auto timeout_at = ceph::coarse_mono_clock::now() + opt_timeout_sec;
+    ret = rgw_bucket_sync_checkpoint(dpp(), store, *handler, bucket_info,
+                                     opt_source_zone, opt_source_bucket,
+                                     opt_retry_delay_ms, timeout_at);
+    if (ret < 0) {
+      lderr(store->ctx()) << "bucket sync checkpoint failed: " << cpp_strerror(ret) << dendl;
+      return -ret;
+    }
+  }
+
   if ((opt_cmd == OPT::BUCKET_SYNC_DISABLE) || (opt_cmd == OPT::BUCKET_SYNC_ENABLE)) {
     if (bucket_name.empty()) {
       cerr << "ERROR: bucket not specified" << std::endl;
@@ -8024,7 +8076,7 @@ next:
 
     map<int, rgw_bucket_shard_sync_info>& sync_status = sync.get_sync_status();
 
-    encode_json("sync_status", sync_status, formatter);
+    encode_json("sync_status", sync_status, formatter.get());
     formatter->flush(cout);
   }
 
@@ -8086,7 +8138,7 @@ next:
 
       for (list<rgw_bi_log_entry>::iterator iter = entries.begin(); iter != entries.end(); ++iter) {
         rgw_bi_log_entry& entry = *iter;
-        encode_json("entry", entry, formatter);
+        encode_json("entry", entry, formatter.get());
 
         marker = entry.id;
       }
@@ -8101,17 +8153,28 @@ next:
     if (max_entries < 0) {
       max_entries = 1000;
     }
+    if (!start_date.empty()) {
+      std::cerr << "start-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_date.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_marker.empty()) {
+      std::cerr << "end-marker not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!start_marker.empty()) {
+      if (marker.empty()) {
+	marker = start_marker;
+      } else {
+	std::cerr << "start-marker and marker not both allowed." << std::endl;
+	return -EINVAL;
+      }
+    }
 
     bool truncated;
-    utime_t start_time, end_time;
-
-    int ret = parse_date_str(start_date, start_time);
-    if (ret < 0)
-      return -ret;
-
-    ret = parse_date_str(end_date, end_time);
-    if (ret < 0)
-      return -ret;
 
     if (shard_id < 0) {
       shard_id = 0;
@@ -8121,7 +8184,7 @@ next:
 
     for (; shard_id < ERROR_LOGGER_SHARDS; ++shard_id) {
       formatter->open_object_section("shard");
-      encode_json("shard_id", shard_id, formatter);
+      encode_json("shard_id", shard_id, formatter.get());
       formatter->open_array_section("entries");
 
       int count = 0;
@@ -8129,11 +8192,10 @@ next:
 
       do {
         list<cls_log_entry> entries;
-        ret = store->svc()->cls->timelog.list(oid, start_time.to_real_time(), end_time.to_real_time(),
-                                           max_entries - count, entries, marker, &marker, &truncated,
-                                           null_yield);
-        if (ret == -ENOENT) {
-          break;
+        ret = store->svc()->cls->timelog.list(oid, {}, {}, max_entries - count, entries, marker, &marker, &truncated,
+					      null_yield);
+	if (ret == -ENOENT) {
+	  break;
         }
         if (ret < 0) {
           cerr << "ERROR: svc.cls->timelog.list(): " << cpp_strerror(-ret) << std::endl;
@@ -8153,11 +8215,11 @@ next:
             continue;
           }
           formatter->open_object_section("entry");
-          encode_json("id", cls_entry.id, formatter);
-          encode_json("section", cls_entry.section, formatter);
-          encode_json("name", cls_entry.name, formatter);
-          encode_json("timestamp", cls_entry.timestamp, formatter);
-          encode_json("info", log_entry, formatter);
+          encode_json("id", cls_entry.id, formatter.get());
+          encode_json("section", cls_entry.section, formatter.get());
+          encode_json("name", cls_entry.name, formatter.get());
+          encode_json("timestamp", cls_entry.timestamp, formatter.get());
+          encode_json("info", log_entry, formatter.get());
           formatter->close_section();
           formatter->flush(cout);
         }
@@ -8176,23 +8238,29 @@ next:
   }
 
   if (opt_cmd == OPT::SYNC_ERROR_TRIM) {
-    utime_t start_time, end_time;
-    int ret = parse_date_str(start_date, start_time);
-    if (ret < 0)
-      return -ret;
-
-    ret = parse_date_str(end_date, end_time);
-    if (ret < 0)
-      return -ret;
+    if (!start_date.empty()) {
+      std::cerr << "start-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_date.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!start_marker.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_marker.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
 
     if (shard_id < 0) {
       shard_id = 0;
     }
 
     for (; shard_id < ERROR_LOGGER_SHARDS; ++shard_id) {
-      ret = trim_sync_error_log(shard_id, start_time.to_real_time(),
-                                end_time.to_real_time(), start_marker,
-                                end_marker, trim_delay_ms);
+      ret = trim_sync_error_log(shard_id, marker, trim_delay_ms);
       if (ret < 0) {
         cerr << "ERROR: sync error trim: " << cpp_strerror(-ret) << std::endl;
         return -ret;
@@ -8238,7 +8306,7 @@ next:
       return -ret;
     }
 
-    show_result(sync_policy, zone_formatter, cout);
+    show_result(sync_policy, zone_formatter.get(), cout);
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_GET) {
@@ -8252,7 +8320,7 @@ next:
     auto& groups = sync_policy.groups;
 
     if (!opt_group_id) {
-      show_result(groups, zone_formatter, cout);
+      show_result(groups, zone_formatter.get(), cout);
     } else {
       auto iter = sync_policy.groups.find(*opt_group_id);
       if (iter == sync_policy.groups.end()) {
@@ -8260,7 +8328,7 @@ next:
         return ENOENT;
       }
 
-      show_result(iter->second, zone_formatter, cout);
+      show_result(iter->second, zone_formatter.get(), cout);
     }
   }
 
@@ -8282,8 +8350,8 @@ next:
     }
 
     {
-      Formatter::ObjectSection os(*zone_formatter, "result");
-      encode_json("sync_policy", sync_policy, zone_formatter);
+      Formatter::ObjectSection os(*zone_formatter.get(), "result");
+      encode_json("sync_policy", sync_policy, zone_formatter.get());
     }
 
     zone_formatter->flush(cout);
@@ -8336,7 +8404,7 @@ next:
       return -ret;
     }
 
-    show_result(sync_policy, zone_formatter, cout);
+    show_result(sync_policy, zone_formatter.get(), cout);
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_FLOW_REMOVE) {
@@ -8376,7 +8444,7 @@ next:
       return -ret;
     }
 
-    show_result(sync_policy, zone_formatter, cout);
+    show_result(sync_policy, zone_formatter.get(), cout);
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_PIPE_CREATE ||
@@ -8459,7 +8527,7 @@ next:
       return -ret;
     }
 
-    show_result(sync_policy, zone_formatter, cout);
+    show_result(sync_policy, zone_formatter.get(), cout);
   }
 
   if (opt_cmd == OPT::SYNC_GROUP_PIPE_REMOVE) {
@@ -8518,7 +8586,7 @@ next:
       return -ret;
     }
 
-    show_result(sync_policy, zone_formatter, cout);
+    show_result(sync_policy, zone_formatter.get(), cout);
   }
 
   if (opt_cmd == OPT::SYNC_POLICY_GET) {
@@ -8529,7 +8597,7 @@ next:
     }
     auto& sync_policy = sync_policy_ctx.get_policy();
 
-    show_result(sync_policy, zone_formatter, cout);
+    show_result(sync_policy, zone_formatter.get(), cout);
   }
 
   if (opt_cmd == OPT::BILOG_TRIM) {
@@ -8568,7 +8636,7 @@ next:
       return -ret;
     }
     formatter->open_object_section("entries");
-    encode_json("markers", markers, formatter);
+    encode_json("markers", markers, formatter.get());
     formatter->close_section();
     formatter->flush(cout);
   }
@@ -8604,26 +8672,42 @@ next:
     int count = 0;
     if (max_entries < 0)
       max_entries = 1000;
-
-    utime_t start_time, end_time;
-
-    int ret = parse_date_str(start_date, start_time);
-    if (ret < 0)
-      return -ret;
-
-    ret = parse_date_str(end_date, end_time);
-    if (ret < 0)
-      return -ret;
+    if (!start_date.empty()) {
+      std::cerr << "start-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_date.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_marker.empty()) {
+      std::cerr << "end-marker not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!start_marker.empty()) {
+      if (marker.empty()) {
+	marker = start_marker;
+      } else {
+	std::cerr << "start-marker and marker not both allowed." << std::endl;
+	return -EINVAL;
+      }
+    }
 
     auto datalog_svc = store->svc()->datalog_rados;
     RGWDataChangesLog::LogMarker log_marker;
 
     do {
-      list<rgw_data_change_log_entry> entries;
+      std::vector<rgw_data_change_log_entry> entries;
       if (specified_shard_id) {
-        ret = datalog_svc->list_entries(shard_id, start_time.to_real_time(), end_time.to_real_time(), max_entries - count, entries, marker, &marker, &truncated);
+        ret = datalog_svc->list_entries(shard_id, max_entries - count,
+					entries,
+					marker.empty() ?
+					std::nullopt :
+					std::make_optional(marker),
+					&marker, &truncated);
       } else {
-        ret = datalog_svc->list_entries(start_time.to_real_time(), end_time.to_real_time(), max_entries - count, entries, log_marker, &truncated);
+        ret = datalog_svc->list_entries(max_entries - count, entries,
+					log_marker, &truncated);
       }
       if (ret < 0) {
         cerr << "ERROR: list_bi_log_entries(): " << cpp_strerror(-ret) << std::endl;
@@ -8632,15 +8716,14 @@ next:
 
       count += entries.size();
 
-      for (list<rgw_data_change_log_entry>::iterator iter = entries.begin(); iter != entries.end(); ++iter) {
-        rgw_data_change_log_entry& entry = *iter;
+      for (const auto& entry : entries) {
         if (!extra_info) {
-          encode_json("entry", entry.entry, formatter);
+          encode_json("entry", entry.entry, formatter.get());
         } else {
-          encode_json("entry", entry, formatter);
+          encode_json("entry", entry, formatter.get());
         }
       }
-      formatter->flush(cout);
+      formatter.get()->flush(cout);
     } while (truncated && count < max_entries);
 
     formatter->close_section();
@@ -8657,7 +8740,7 @@ next:
       RGWDataChangesLogInfo info;
       store->svc()->datalog_rados->get_info(i, &info);
 
-      ::encode_json("info", info, formatter);
+      ::encode_json("info", info, formatter.get());
 
       if (specified_shard_id)
         break;
@@ -8686,15 +8769,26 @@ next:
   }
 
   if (opt_cmd == OPT::DATALOG_TRIM) {
-    utime_t start_time, end_time;
-
-    int ret = parse_date_str(start_date, start_time);
-    if (ret < 0)
-      return -ret;
-
-    ret = parse_date_str(end_date, end_time);
-    if (ret < 0)
-      return -ret;
+    if (!start_date.empty()) {
+      std::cerr << "start-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_date.empty()) {
+      std::cerr << "end-date not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!start_marker.empty()) {
+      std::cerr << "start-marker not allowed." << std::endl;
+      return -EINVAL;
+    }
+    if (!end_marker.empty()) {
+      if (marker.empty()) {
+	marker = end_marker;
+      } else {
+	std::cerr << "end-marker and marker not both allowed." << std::endl;
+	return -EINVAL;
+      }
+    }
 
     if (!specified_shard_id) {
       cerr << "ERROR: requires a --shard-id" << std::endl;
@@ -8704,9 +8798,7 @@ next:
     // loop until -ENODATA
     do {
       auto datalog = store->svc()->datalog_rados;
-      ret = datalog->trim_entries(shard_id, start_time.to_real_time(),
-                                  end_time.to_real_time(),
-                                  start_marker, end_marker);
+      ret = datalog->trim_entries(shard_id, marker);
     } while (ret == 0);
 
     if (ret < 0 && ret != -ENODATA) {
@@ -8867,7 +8959,7 @@ next:
       return -ret;
     }
     formatter->open_object_section("result");
-    encode_json("entry", result, formatter);
+    encode_json("entry", result, formatter.get());
     formatter->close_section();
     formatter->flush(cout);
   }
@@ -8885,7 +8977,7 @@ next:
       return -ret;
     }
     formatter->open_object_section("result");
-    encode_json("entries", result, formatter);
+    encode_json("entries", result, formatter.get());
     formatter->close_section();
     formatter->flush(cout);
   }
@@ -9032,7 +9124,7 @@ next:
         cerr << "ERROR: could not get topics: " << cpp_strerror(-ret) << std::endl;
         return -ret;
       }
-      encode_json("result", result, formatter);
+      encode_json("result", result, formatter.get());
     } else {
       rgw_pubsub_user_topics result;
       int ret = ups.get_user_topics(&result);
@@ -9040,7 +9132,7 @@ next:
         cerr << "ERROR: could not get topics: " << cpp_strerror(-ret) << std::endl;
         return -ret;
       }
-      encode_json("result", result, formatter);
+      encode_json("result", result, formatter.get());
     }
     formatter->flush(cout);
   }
@@ -9063,7 +9155,7 @@ next:
       cerr << "ERROR: could not get topic: " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }
-    encode_json("topic", topic, formatter);
+    encode_json("topic", topic, formatter.get());
     formatter->flush(cout);
   }
 
@@ -9110,7 +9202,7 @@ next:
       cerr << "ERROR: could not get subscription info: " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }
-    encode_json("sub", sub_conf, formatter);
+    encode_json("sub", sub_conf, formatter.get());
     formatter->flush(cout);
   }
 
@@ -9163,7 +9255,7 @@ next:
       cerr << "ERROR: could not list events: " << cpp_strerror(-ret) << std::endl;
       return -ret;
     }
-    encode_json("result", *sub, formatter);
+    encode_json("result", *sub, formatter.get());
     formatter->flush(cout);
  }
 
@@ -9195,5 +9287,79 @@ next:
     }
   }
 
+  if (opt_cmd == OPT::SCRIPT_PUT) {
+    if (!str_script_ctx) {
+      cerr << "ERROR: context was not provided (via --context)" << std::endl;
+      return EINVAL;
+    }
+    if (infile.empty()) {
+      cerr << "ERROR: infile was not provided (via --infile)" << std::endl;
+      return EINVAL;
+    }
+    bufferlist bl;
+    auto rc = read_input(infile, bl);
+    if (rc < 0) {
+      cerr << "ERROR: failed to read script: '" << infile << "'. error: " << rc << std::endl;
+      return rc;
+    }
+    const std::string script = bl.to_str();
+    std::string err_msg;
+    if (!rgw::lua::verify(script, err_msg)) {
+      cerr << "ERROR: script: '" << infile << "' has error: " << std::endl << err_msg << std::endl;
+      return EINVAL;
+    }
+    const rgw::lua::context script_ctx = rgw::lua::to_context(*str_script_ctx);
+    if (script_ctx == rgw::lua::context::none) {
+      cerr << "ERROR: invalid script context: " << *str_script_ctx << ". must be one of: preRequest, postRequest" <<  std::endl;
+      return EINVAL;
+    }
+    rc = rgw::lua::write_script(store, tenant, null_yield, script_ctx, script);
+    if (rc < 0) {
+      cerr << "ERROR: failed to put script. error: " << rc << std::endl;
+      return rc;
+    }
+  }
+
+  if (opt_cmd == OPT::SCRIPT_GET) {
+    if (!str_script_ctx) {
+      cerr << "ERROR: context was not provided (via --context)" << std::endl;
+      return EINVAL;
+    }
+    const rgw::lua::context script_ctx = rgw::lua::to_context(*str_script_ctx);
+    if (script_ctx == rgw::lua::context::none) {
+      cerr << "ERROR: invalid script context: " << *str_script_ctx << ". must be one of: preRequest, postRequest" <<  std::endl;
+      return EINVAL;
+    }
+    std::string script;
+    const auto rc = rgw::lua::read_script(store, tenant, null_yield, script_ctx, script);
+    if (rc == -ENOENT) {
+      std::cout << "no script exists for context: " << *str_script_ctx << 
+        (tenant.empty() ? "" : (" in tenant: " + tenant)) << std::endl;
+    } else if (rc < 0) {
+      cerr << "ERROR: failed to read script. error: " << rc << std::endl;
+      return rc;
+    } else {
+      std::cout << script << std::endl;
+    }
+  }
+  
+  if (opt_cmd == OPT::SCRIPT_RM) {
+    if (!str_script_ctx) {
+      cerr << "ERROR: context was not provided (via --context)" << std::endl;
+      return EINVAL;
+    }
+    const rgw::lua::context script_ctx = rgw::lua::to_context(*str_script_ctx);
+    if (script_ctx == rgw::lua::context::none) {
+      cerr << "ERROR: invalid script context: " << *str_script_ctx << ". must be one of: preRequest, postRequest" <<  std::endl;
+      return EINVAL;
+    }
+    const auto rc = rgw::lua::delete_script(store, tenant, null_yield, script_ctx);
+    if (rc < 0) {
+      cerr << "ERROR: failed to remove script. error: " << rc << std::endl;
+      return rc;
+    }
+  }
+
   return 0;
 }
+

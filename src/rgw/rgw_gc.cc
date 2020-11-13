@@ -17,6 +17,7 @@
 
 #include <list> // XXX
 #include <sstream>
+#include "xxhash.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
@@ -60,7 +61,7 @@ void RGWGC::finalize()
 
 int RGWGC::tag_index(const string& tag)
 {
-  return rgw_shard_id(tag, max_objs);
+  return rgw_shards_mod(XXH64(tag.c_str(), tag.size(), seed), max_objs);
 }
 
 int RGWGC::send_chain(cls_rgw_obj_chain& chain, const string& tag)
@@ -208,7 +209,7 @@ int RGWGC::list(int *index, string& marker, uint32_t max, bool expired_only, std
       }
       obj_version objv;
       cls_version_read(store->gc_pool_ctx, obj_names[*index], &objv);
-      if (ret == -ENOENT) {
+      if (ret == -ENOENT || entries.size() == 0) {
         if (objv.ver == 0) {
           continue;
         } else {
@@ -252,6 +253,11 @@ int RGWGC::list(int *index, string& marker, uint32_t max, bool expired_only, std
     marker = next_marker;
 
     if (*index == max_objs - 1) {
+      if (queue_entries.size() > 0 && *truncated) {
+        processing_queue = true;
+      } else {
+        processing_queue = false;
+      }
       /* we cut short here, truncated will hold the correct value */
       return 0;
     }
@@ -479,6 +485,10 @@ public:
 	    index << " ret=" << ret << dendl;
       return ret;
     }
+    if (perfcounter) {
+      /* log the count of tags retired for rate estimation */
+      perfcounter->inc(l_rgw_gc_retire, num_entries);
+    }
     return 0;
   }
 }; // class RGWGCIOManger
@@ -537,13 +547,13 @@ int RGWGC::process(int index, int max_secs, bool expired_only,
         if (non_expired_entries.size() == 0) {
           transitioned_objects_cache[index] = true;
           marker.clear();
-          ldpp_dout(this, 20) << "RGWGC::process cls_rgw_gc_list returned ENOENT for non expired entries, so setting cache entry to TRUE" << dendl;
+          ldpp_dout(this, 20) << "RGWGC::process cls_rgw_gc_list returned NO non expired entries, so setting cache entry to TRUE" << dendl;
         } else {
           ret = 0;
           goto done;
         }
       }
-      if ((objv.ver == 0) && (ret == -ENOENT)) {
+      if ((objv.ver == 0) && (ret == -ENOENT || entries.size() == 0)) {
         ret = 0;
         goto done;
       }

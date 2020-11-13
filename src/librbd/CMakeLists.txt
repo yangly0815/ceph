@@ -1,14 +1,22 @@
-add_library(rbd_types STATIC
+set(librbd_types_srcs
   journal/Types.cc
   mirroring_watcher/Types.cc
   trash_watcher/Types.cc
   watcher/Types.cc
   WatchNotifyTypes.cc)
 
+if(WITH_RBD_RWL OR WITH_RBD_SSD_CACHE)
+ list(APPEND librbd_types_srcs cache/pwl/Types.cc)
+endif()
+
+add_library(rbd_types STATIC
+  ${librbd_types_srcs})
+
 set(librbd_internal_srcs
   AsioEngine.cc
   AsyncObjectThrottle.cc
   AsyncRequest.cc
+  ConfigWatcher.cc
   DeepCopyRequest.cc
   ExclusiveLock.cc
   ImageCtx.cc
@@ -41,8 +49,15 @@ set(librbd_internal_srcs
   cache/ImageWriteback.cc
   cache/ObjectCacherObjectDispatch.cc
   cache/ObjectCacherWriteback.cc
-  cache/PassthroughImageCache.cc
+  cache/pwl/DiscardRequest.cc
+  cache/pwl/InitRequest.cc
+  cache/pwl/ShutdownRequest.cc
+  cache/Utils.cc
   cache/WriteAroundObjectDispatch.cc
+  crypto/BlockCrypto.cc
+  crypto/CryptoContextPool.cc
+  crypto/CryptoObjectDispatch.cc
+  crypto/openssl/DataCryptor.cc
   deep_copy/ImageCopyRequest.cc
   deep_copy/MetadataCopyRequest.cc
   deep_copy/ObjectCopyRequest.cc
@@ -91,6 +106,7 @@ set(librbd_internal_srcs
   io/ReadResult.cc
   io/RefreshImageDispatch.cc
   io/SimpleSchedulerObjectDispatch.cc
+  io/Types.cc
   io/Utils.cc
   io/WriteBlockImageDispatch.cc
   journal/CreateRequest.cc
@@ -109,6 +125,12 @@ set(librbd_internal_srcs
   managed_lock/ReacquireRequest.cc
   managed_lock/ReleaseRequest.cc
   managed_lock/Utils.cc
+  migration/FileStream.cc
+  migration/ImageDispatch.cc
+  migration/NativeFormat.cc
+  migration/OpenSourceImageRequest.cc
+  migration/RawFormat.cc
+  migration/SourceSpecBuilder.cc
   mirror/DemoteRequest.cc
   mirror/DisableRequest.cc
   mirror/EnableRequest.cc
@@ -163,43 +185,39 @@ set(librbd_internal_srcs
   operation/SnapshotLimitRequest.cc
   operation/SparsifyRequest.cc
   operation/TrimRequest.cc
+  plugin/Api.cc
   trash/MoveRequest.cc
   trash/RemoveRequest.cc
   watcher/Notifier.cc
   watcher/RewatchRequest.cc
   ${CMAKE_SOURCE_DIR}/src/common/ContextCompletion.cc)
 
-add_custom_target(librbd_plugins)
-set(librbd_plugins_dir ${CEPH_INSTALL_PKGLIBDIR}/librbd)
-
-set(rbd_plugin_parent_cache_srcs
-  cache/ParentCacheObjectDispatch.cc
-  plugin/ParentCache.cc)
-add_library(librbd_plugin_parent_cache SHARED ${rbd_plugin_parent_cache_srcs})
-target_link_libraries(librbd_plugin_parent_cache PRIVATE
-  ceph_immutable_object_cache_lib)
-set_target_properties(librbd_plugin_parent_cache PROPERTIES
-  OUTPUT_NAME ceph_librbd_parent_cache
-  VERSION 1.0.0
-  SOVERSION 1)
-install(TARGETS librbd_plugin_parent_cache DESTINATION ${librbd_plugins_dir})
-add_dependencies(librbd_plugins librbd_plugin_parent_cache)
-
 if(WITH_EVENTTRACE)
   list(APPEND librbd_internal_srcs ../common/EventTrace.cc)
 endif()
 
-if(WITH_RBD_RWL)
+if(WITH_RBD_RWL OR WITH_RBD_SSD_CACHE)
   set(librbd_internal_srcs
     ${librbd_internal_srcs}
-    cache/rwl/ImageCacheState.cc
-    cache/rwl/LogEntry.cc
-    cache/rwl/LogMap.cc
-    cache/rwl/LogOperation.cc
-    cache/rwl/Request.cc
-    cache/rwl/SyncPoint.cc
-    cache/rwl/Types.cc
-    cache/ReplicatedWriteLog.cc)
+    cache/pwl/ImageCacheState.cc
+    cache/pwl/LogEntry.cc
+    cache/pwl/LogMap.cc
+    cache/pwl/LogOperation.cc
+    cache/pwl/ReadRequest.cc
+    cache/pwl/Request.cc
+    cache/pwl/SyncPoint.cc
+    cache/pwl/AbstractWriteLog.cc
+    cache/WriteLogImageDispatch.cc)
+  if(WITH_RBD_RWL)
+    set(librbd_internal_srcs
+      ${librbd_internal_srcs}
+      cache/pwl/ReplicatedWriteLog.cc)
+  endif()
+  if(WITH_RBD_SSD_CACHE)
+    set(librbd_internal_srcs
+      ${librbd_internal_srcs}
+       cache/pwl/SSDWriteLog.cc)
+  endif()
 endif()
 
 add_library(rbd_api STATIC librbd.cc)
@@ -216,28 +234,53 @@ if(WITH_EVENTTRACE)
   add_dependencies(rbd_internal eventtrace_tp)
 endif()
 target_link_libraries(rbd_internal PRIVATE
-  osdc)
+  osdc rbd_types)
+target_include_directories(rbd_internal PRIVATE ${OPENSSL_INCLUDE_DIR})
 
-if(WITH_RBD_RWL)
+if(WITH_RBD_RWL OR WITH_RBD_SSD_CACHE)
   target_link_libraries(rbd_internal
     PUBLIC blk)
+  target_link_libraries(rbd_internal PRIVATE
+    StdFilesystem::filesystem)
 endif()
+if(WITH_RBD_RWL)
+  target_link_libraries(rbd_types
+    PUBLIC blk)
+endif()
+add_custom_target(librbd_plugins)
+set(librbd_plugins_dir ${CEPH_INSTALL_PKGLIBDIR}/librbd)
+
+set(rbd_plugin_parent_cache_srcs
+  cache/ParentCacheObjectDispatch.cc
+  plugin/ParentCache.cc)
+add_library(librbd_plugin_parent_cache SHARED
+  ${rbd_plugin_parent_cache_srcs})
+target_link_libraries(librbd_plugin_parent_cache PRIVATE
+  ceph_immutable_object_cache_lib ceph-common librbd
+  libneorados
+  librados)
+set_target_properties(librbd_plugin_parent_cache PROPERTIES
+  OUTPUT_NAME ceph_librbd_parent_cache
+  VERSION 1.0.0
+  SOVERSION 1)
+install(TARGETS librbd_plugin_parent_cache DESTINATION ${librbd_plugins_dir})
+add_dependencies(librbd_plugins librbd_plugin_parent_cache)
 
 add_library(librbd ${CEPH_SHARED}
   librbd.cc)
 if(WITH_LTTNG)
   add_dependencies(librbd librbd-tp)
 endif()
-add_dependencies(librbd librbd_plugins)
 
 target_link_libraries(librbd PRIVATE
   rbd_internal
   rbd_types
   journal
+  libneorados
   librados
-  cls_rbd_client 
-  cls_lock_client 
-  cls_journal_client 
+  cls_rbd_client
+  cls_lock_client
+  cls_journal_client
   ceph-common
   pthread
   ${CMAKE_DL_LIBS}
@@ -253,7 +296,7 @@ if(ENABLE_SHARED)
     SOVERSION 1
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT WIN32)
       set_property(TARGET librbd APPEND_STRING PROPERTY
         LINK_FLAGS " -Wl,--exclude-libs,ALL")
     endif()

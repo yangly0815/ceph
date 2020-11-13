@@ -3,36 +3,35 @@ import { FormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
 import { NgbNav, NgbTooltip } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { Observable, Subscription } from 'rxjs';
 
-import { CrushRuleService } from '../../../shared/api/crush-rule.service';
-import { ErasureCodeProfileService } from '../../../shared/api/erasure-code-profile.service';
-import { PoolService } from '../../../shared/api/pool.service';
-import { CrushNodeSelectionClass } from '../../../shared/classes/crush.node.selection.class';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { SelectOption } from '../../../shared/components/select/select-option.model';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdForm } from '../../../shared/forms/cd-form';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
+import { CrushRuleService } from '~/app/shared/api/crush-rule.service';
+import { ErasureCodeProfileService } from '~/app/shared/api/erasure-code-profile.service';
+import { PoolService } from '~/app/shared/api/pool.service';
+import { CrushNodeSelectionClass } from '~/app/shared/classes/crush.node.selection.class';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { SelectOption } from '~/app/shared/components/select/select-option.model';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
 import {
   RbdConfigurationEntry,
   RbdConfigurationSourceField
-} from '../../../shared/models/configuration';
-import { CrushRule } from '../../../shared/models/crush-rule';
-import { CrushStep } from '../../../shared/models/crush-step';
-import { ErasureCodeProfile } from '../../../shared/models/erasure-code-profile';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { Permission } from '../../../shared/models/permissions';
-import { PoolFormInfo } from '../../../shared/models/pool-form-info';
-import { DimlessBinaryPipe } from '../../../shared/pipes/dimless-binary.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { FormatterService } from '../../../shared/services/formatter.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+} from '~/app/shared/models/configuration';
+import { CrushRule } from '~/app/shared/models/crush-rule';
+import { CrushStep } from '~/app/shared/models/crush-step';
+import { ErasureCodeProfile } from '~/app/shared/models/erasure-code-profile';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { Permission } from '~/app/shared/models/permissions';
+import { PoolFormInfo } from '~/app/shared/models/pool-form-info';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { FormatterService } from '~/app/shared/services/formatter.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { CrushRuleFormModalComponent } from '../crush-rule-form-modal/crush-rule-form-modal.component';
 import { ErasureCodeProfileFormModalComponent } from '../erasure-code-profile-form/erasure-code-profile-form-modal.component';
 import { Pool } from '../pool';
@@ -66,7 +65,7 @@ export class PoolFormComponent extends CdForm implements OnInit {
   editing = false;
   isReplicated = false;
   isErasure = false;
-  data = new PoolFormData(this.i18n);
+  data = new PoolFormData();
   externalPgChange = false;
   current: Record<string, any> = {
     rules: []
@@ -96,13 +95,12 @@ export class PoolFormComponent extends CdForm implements OnInit {
     private taskWrapper: TaskWrapperService,
     private ecpService: ErasureCodeProfileService,
     private crushRuleService: CrushRuleService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
     this.editing = this.router.url.startsWith(`/pool/${URLVerbs.EDIT}`);
     this.action = this.editing ? this.actionLabels.EDIT : this.actionLabels.CREATE;
-    this.resource = this.i18n('pool');
+    this.resource = $localize`pool`;
     this.authenticate();
     this.createForm();
   }
@@ -632,7 +630,7 @@ export class PoolFormComponent extends CdForm implements OnInit {
       getTabs: () => this.ecpInfoTabs,
       tabPosition: 'used-by-pools',
       nameAttribute: 'name',
-      itemDescription: this.i18n('erasure code profile'),
+      itemDescription: $localize`erasure code profile`,
       reloadFn: () => this.reloadECPs(),
       deleteFn: (name) => this.ecpService.delete(name),
       taskName: 'ecp/delete'
@@ -720,7 +718,7 @@ export class PoolFormComponent extends CdForm implements OnInit {
       getTabs: () => this.crushInfoTabs,
       tabPosition: 'used-by-pools',
       nameAttribute: 'rule_name',
-      itemDescription: this.i18n('crush rule'),
+      itemDescription: $localize`crush rule`,
       reloadFn: () => this.reloadCrushRules(),
       deleteFn: (name) => this.crushRuleService.delete(name),
       taskName: 'crushRule/delete'

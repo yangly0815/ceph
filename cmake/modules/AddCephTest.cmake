@@ -32,6 +32,7 @@ if(WITH_GTEST_PARALLEL)
       SOURCE_DIR "${gtest_parallel_source_dir}"
       GIT_REPOSITORY "https://github.com/google/gtest-parallel.git"
       GIT_TAG "master"
+      GIT_SHALLOW TRUE
       CONFIGURE_COMMAND ""
       BUILD_COMMAND ""
       INSTALL_COMMAND "")
@@ -62,9 +63,10 @@ function(add_tox_test name)
   else()
     set(tox_path ${CMAKE_CURRENT_SOURCE_DIR})
   endif()
-  list(APPEND tox_envs py3)
   if(DEFINED TOXTEST_TOX_ENVS)
     list(APPEND tox_envs ${TOXTEST_TOX_ENVS})
+  else()
+    list(APPEND tox_envs py3)
   endif()
   string(REPLACE ";" "," tox_envs "${tox_envs}")
   find_package(Python3 QUIET REQUIRED)

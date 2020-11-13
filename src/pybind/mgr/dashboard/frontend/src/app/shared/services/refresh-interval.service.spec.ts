@@ -1,14 +1,13 @@
 import { NgZone } from '@angular/core';
 import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { RefreshIntervalService } from './refresh-interval.service';
 
 describe('RefreshIntervalService', () => {
   let service: RefreshIntervalService;
 
   configureTestBed({
-    imports: [],
     providers: [RefreshIntervalService]
   });
 

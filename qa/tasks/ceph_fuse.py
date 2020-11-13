@@ -109,11 +109,13 @@ def task(ctx, config):
     all_mounts = getattr(ctx, 'mounts', {})
     mounted_by_me = {}
     skipped = {}
+    remotes = set()
 
     brxnet = config.get("brxnet", None)
 
     # Construct any new FuseMount instances
     for id_, remote in clients:
+        remotes.add(remote)
         client_config = config.get("client.%s" % id_)
         if client_config is None:
             client_config = {}
@@ -126,7 +128,9 @@ def task(ctx, config):
             continue
 
         if id_ not in all_mounts:
-            fuse_mount = FuseMount(ctx, client_config, testdir, auth_id, remote, brxnet)
+            fuse_mount = FuseMount(ctx=ctx, client_config=client_config,
+                                   test_dir=testdir, client_id=auth_id,
+                                   client_remote=remote, brxnet=brxnet)
             all_mounts[id_] = fuse_mount
         else:
             # Catch bad configs where someone has e.g. tried to use ceph-fuse and kcephfs for the same client
@@ -137,22 +141,28 @@ def task(ctx, config):
 
     ctx.mounts = all_mounts
 
-    # Mount any clients we have been asked to (default to mount all)
-    log.info('Mounting ceph-fuse clients...')
-    for info in mounted_by_me.values():
-        config = info["config"]
-        mount_path = config.get("mount_path")
-        mountpoint = config.get("mountpoint")
-        info["mount"].mount(mountpoint=mountpoint, mount_path=mount_path)
-
-    for info in mounted_by_me.values():
-        info["mount"].wait_until_mounted()
-
     # Umount any pre-existing clients that we have not been asked to mount
     for client_id in set(all_mounts.keys()) - set(mounted_by_me.keys()) - set(skipped.keys()):
         mount = all_mounts[client_id]
         if mount.is_mounted():
             mount.umount_wait()
+
+    for remote in remotes:
+        FuseMount.cleanup_stale_netnses_and_bridge(remote)
+
+    # Mount any clients we have been asked to (default to mount all)
+    log.info('Mounting ceph-fuse clients...')
+    for info in mounted_by_me.values():
+        config = info["config"]
+        mount_x = info['mount']
+        if config.get("mount_path"):
+            mount_x.cephfs_mntpt = config.get("mount_path")
+        if config.get("mountpoint"):
+            mount_x.hostfs_mntpt = config.get("mountpoint")
+        mount_x.mount()
+
+    for info in mounted_by_me.values():
+        info["mount"].wait_until_mounted()
 
     try:
         yield all_mounts
@@ -164,3 +174,5 @@ def task(ctx, config):
             mount = info["mount"]
             if mount.is_mounted():
                 mount.umount_wait()
+        for remote in remotes:
+            FuseMount.cleanup_stale_netnses_and_bridge(remote)

@@ -273,8 +273,8 @@ MESSAGE(MMDSResolve)
 #include "messages/MMDSResolveAck.h"
 MESSAGE(MMDSResolveAck)
 
-#include "messages/MMDSSlaveRequest.h"
-MESSAGE(MMDSSlaveRequest)
+#include "messages/MMDSPeerRequest.h"
+MESSAGE(MMDSPeerRequest)
 
 #include "messages/MMDSSnapUpdate.h"
 MESSAGE(MMDSSnapUpdate)
@@ -323,9 +323,6 @@ MESSAGE(MMonJoin)
 
 #include "messages/MMonMap.h"
 MESSAGE(MMonMap)
-
-#include "messages/MMonMetadata.h"
-MESSAGE(MMonMetadata)
 
 #include "messages/MMonPaxos.h"
 MESSAGE(MMonPaxos)

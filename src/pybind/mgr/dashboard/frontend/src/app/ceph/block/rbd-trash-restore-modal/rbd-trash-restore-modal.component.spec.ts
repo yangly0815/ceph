@@ -10,9 +10,9 @@ import { RouterTestingModule } from '@angular/router/testing';
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { RbdTrashRestoreModalComponent } from './rbd-trash-restore-modal.component';
 
 describe('RbdTrashRestoreModalComponent', () => {
@@ -28,7 +28,7 @@ describe('RbdTrashRestoreModalComponent', () => {
       SharedModule,
       RouterTestingModule
     ],
-    providers: [NgbActiveModal, i18nProviders]
+    providers: [NgbActiveModal]
   });
 
   beforeEach(() => {

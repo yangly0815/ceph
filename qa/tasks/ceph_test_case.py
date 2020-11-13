@@ -6,6 +6,8 @@ from teuthology.orchestra.run import CommandFailedError
 
 log = logging.getLogger(__name__)
 
+class TestTimeoutError(RuntimeError):
+    pass
 
 class CephTestCase(unittest.TestCase):
     """
@@ -161,8 +163,7 @@ class CephTestCase(unittest.TestCase):
 
         self.wait_until_true(is_clear, timeout)
 
-    def wait_until_equal(self, get_fn, expect_val, timeout, reject_fn=None):
-        period = 5
+    def wait_until_equal(self, get_fn, expect_val, timeout, reject_fn=None, period=5):
         elapsed = 0
         while True:
             val = get_fn()
@@ -172,7 +173,7 @@ class CephTestCase(unittest.TestCase):
                 raise RuntimeError("wait_until_equal: forbidden value {0} seen".format(val))
             else:
                 if elapsed >= timeout:
-                    raise RuntimeError("Timed out after {0} seconds waiting for {1} (currently {2})".format(
+                    raise TestTimeoutError("Timed out after {0} seconds waiting for {1} (currently {2})".format(
                         elapsed, expect_val, val
                     ))
                 else:
@@ -191,7 +192,7 @@ class CephTestCase(unittest.TestCase):
                 return
             else:
                 if elapsed >= timeout:
-                    raise RuntimeError("Timed out after {0}s".format(elapsed))
+                    raise TestTimeoutError("Timed out after {0}s".format(elapsed))
                 else:
                     log.debug("wait_until_true: waiting (timeout={0})...".format(timeout))
                 time.sleep(period)

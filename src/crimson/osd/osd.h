@@ -15,7 +15,6 @@
 #include "crimson/common/gated.h"
 #include "crimson/net/chained_dispatchers.h"
 #include "crimson/admin/admin_socket.h"
-#include "crimson/admin/osd_admin.h"
 #include "crimson/common/simple_lru.h"
 #include "crimson/common/shared_lru.h"
 #include "crimson/mgr/client.h"
@@ -37,6 +36,7 @@ class MCommand;
 class MOSDMap;
 class MOSDRepOpReply;
 class MOSDRepOp;
+class MOSDScrub2;
 class OSDMap;
 class OSDMeta;
 class Heartbeat;
@@ -102,7 +102,11 @@ class OSD final : public crimson::net::Dispatcher,
   void ms_handle_remote_reset(crimson::net::ConnectionRef conn) final;
 
   // mgr::WithStats methods
-  MessageRef get_stats() final;
+  // pg statistics including osd ones
+  osd_stat_t osd_stat;
+  uint32_t osd_stat_seq = 0;
+  void update_stats();
+  MessageRef get_stats() const final;
 
   // AuthHandler methods
   void handle_authentication(const EntityName& name,
@@ -111,7 +115,7 @@ class OSD final : public crimson::net::Dispatcher,
   crimson::osd::ShardServices shard_services;
 
   std::unique_ptr<Heartbeat> heartbeat;
-  seastar::timer<seastar::lowres_clock> heartbeat_timer;
+  seastar::timer<seastar::lowres_clock> tick_timer;
 
   // admin-socket
   seastar::lw_shared_ptr<crimson::admin::AdminSocket> asok;
@@ -130,11 +134,15 @@ public:
   seastar::future<> stop();
 
   void dump_status(Formatter*) const;
-
+  void dump_pg_state_history(Formatter*) const;
   void print(std::ostream&) const;
 
   seastar::future<> send_incremental_map(crimson::net::Connection* conn,
 					 epoch_t first);
+
+  /// @return the seq id of the pg stats being sent
+  uint64_t send_pg_stats();
+
 private:
   seastar::future<> start_boot();
   seastar::future<> _preboot(version_t oldest_osdmap, version_t newest_osdmap);
@@ -146,9 +154,6 @@ private:
 				   bool do_create);
   seastar::future<Ref<PG>> load_pg(spg_t pgid);
   seastar::future<> load_pgs();
-
-  epoch_t up_thru_wanted = 0;
-  seastar::future<> _send_alive();
 
   // OSDMapService methods
   epoch_t get_up_epoch() const final {
@@ -186,6 +191,8 @@ private:
 				      Ref<MOSDPeeringOp> m);
   seastar::future<> handle_recovery_subreq(crimson::net::Connection* conn,
 					   Ref<MOSDFastDispatchOp> m);
+  seastar::future<> handle_scrub(crimson::net::Connection* conn,
+				 Ref<MOSDScrub2> m);
   seastar::future<> handle_mark_me_down(crimson::net::Connection* conn,
 					Ref<MOSDMarkMeDown> m);
 
@@ -224,6 +231,7 @@ public:
     std::unique_ptr<PGCreateInfo> info);
   blocking_future<Ref<PG>> wait_for_pg(
     spg_t pgid);
+  Ref<PG> get_pg(spg_t pgid);
 
   bool should_restart() const;
   seastar::future<> restart();

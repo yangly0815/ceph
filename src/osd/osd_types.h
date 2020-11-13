@@ -33,6 +33,7 @@
 #include "include/mempool.h"
 
 #include "msg/msg_types.h"
+#include "include/compat.h"
 #include "include/types.h"
 #include "include/utime.h"
 #include "include/CompatSet.h"
@@ -142,7 +143,7 @@ void dump(ceph::Formatter* f, const osd_alerts_t& alerts);
 
 typedef interval_set<
   snapid_t,
-  mempool::osdmap::flat_map<snapid_t,snapid_t>> snap_interval_set_t;
+  mempool::osdmap::flat_map> snap_interval_set_t;
 
 
 /**
@@ -1160,6 +1161,8 @@ struct pg_merge_meta_t {
 };
 WRITE_CLASS_ENCODER(pg_merge_meta_t)
 
+class OSDMap;
+
 /*
  * pg_pool
  */
@@ -1173,6 +1176,7 @@ struct pg_pool_t {
     //TYPE_RAID4 = 2,   // raid4 (never implemented)
     TYPE_ERASURE = 3,      // erasure-coded
   };
+  static constexpr uint32_t pg_CRUSH_ITEM_NONE = 0x7fffffff; /* can't import crush.h here */
   static std::string_view get_type_name(int t) {
     switch (t) {
     case TYPE_REPLICATED: return "replicated";
@@ -1380,7 +1384,16 @@ public:
   std::map<std::string, std::string> properties;  ///< OBSOLETE
   std::string erasure_code_profile; ///< name of the erasure code profile in OSDMap
   epoch_t last_change = 0;      ///< most recent epoch changed, exclusing snapshot changes
-
+  // If non-zero, require OSDs in at least this many different instances...
+  uint32_t peering_crush_bucket_count = 0;
+  // of this bucket type...
+  uint32_t peering_crush_bucket_barrier = 0;
+  // including this one
+  int32_t peering_crush_mandatory_member = pg_CRUSH_ITEM_NONE;
+  // The per-bucket replica count is calculated with this "target"
+  // instead of the above crush_bucket_count. This means we can maintain a
+  // target size of 4 without attempting to place them all in 1 DC
+  uint32_t peering_crush_bucket_target = 0;
   /// last epoch that forced clients to resend
   epoch_t last_force_op_resend = 0;
   /// last epoch that forced clients to resend (pre-nautilus clients only)
@@ -1449,6 +1462,19 @@ public:
     hit_set_grade_decay_rate = 0;
     hit_set_search_last_n = 0;
     grade_table.resize(0);
+  }
+
+  bool is_stretch_pool() const {
+    return peering_crush_bucket_count != 0;
+  }
+
+  bool stretch_set_can_peer(const set<int>& want, const OSDMap& osdmap,
+			    std::ostream *out) const;
+  bool stretch_set_can_peer(const vector<int>& want, const OSDMap& osdmap,
+			    std::ostream *out) const {
+    set<int> swant;
+    for (auto i : want) swant.insert(i);
+    return stretch_set_can_peer(swant, osdmap, out);
   }
 
   uint64_t target_max_bytes = 0;   ///< tiering: target max pool size
@@ -2639,6 +2665,7 @@ struct pg_history_t {
 			       // (note: may be pg creation epoch for
 			       // pre-luminous clusters)
   epoch_t last_epoch_started = 0;;  // lower bound on last epoch started (anywhere, not necessarily locally)
+                                    // https://docs.ceph.com/docs/master/dev/osd_internals/last_epoch_started/
   epoch_t last_interval_started = 0;; // first epoch of last_epoch_started interval
   epoch_t last_epoch_clean = 0;;    // lower bound on last epoch the PG was completely clean.
   epoch_t last_interval_clean = 0;; // first epoch of last_epoch_clean interval
@@ -3053,7 +3080,6 @@ struct pg_fast_info_t {
 WRITE_CLASS_ENCODER(pg_fast_info_t)
 
 
-class OSDMap;
 /**
  * PastIntervals -- information needed to determine the PriorSet and
  * the might_have_unfound set
@@ -3189,6 +3215,14 @@ public:
     bool new_sort_bitwise,
     bool old_recovery_deletes,
     bool new_recovery_deletes,
+    uint32_t old_crush_count,
+    uint32_t new_crush_count,
+    uint32_t old_crush_target,
+    uint32_t new_crush_target,
+    uint32_t old_crush_barrier,
+    uint32_t new_crush_barrier,
+    int32_t old_crush_member,
+    int32_t new_crush_member,
     pg_t pgid
     );
 
@@ -3461,13 +3495,13 @@ PastIntervals::PriorSet::PriorSet(
   // so that we know what they do/do not have explicitly before
   // sending them any new info/logs/whatever.
   for (unsigned i = 0; i < acting.size(); i++) {
-    if (acting[i] != 0x7fffffff /* CRUSH_ITEM_NONE, can't import crush.h here */)
+    if (acting[i] != pg_pool_t::pg_CRUSH_ITEM_NONE)
       probe.insert(pg_shard_t(acting[i], ec_pool ? shard_id_t(i) : shard_id_t::NO_SHARD));
   }
   // It may be possible to exclude the up nodes, but let's keep them in
   // there for now.
   for (unsigned i = 0; i < up.size(); i++) {
-    if (up[i] != 0x7fffffff /* CRUSH_ITEM_NONE, can't import crush.h here */)
+    if (up[i] != pg_pool_t::pg_CRUSH_ITEM_NONE)
       probe.insert(pg_shard_t(up[i], ec_pool ? shard_id_t(i) : shard_id_t::NO_SHARD));
   }
 
@@ -3925,6 +3959,7 @@ public:
   interval_set<uint64_t> get_dirty_regions() const;
   bool omap_is_dirty() const;
   bool object_is_exist() const;
+  bool is_clean_region(uint64_t offset, uint64_t len) const;
 
   void encode(ceph::buffer::list &bl) const;
   void decode(ceph::buffer::list::const_iterator &bl);
@@ -4702,10 +4737,10 @@ public:
     return it->second.need;
   }
 
-  void claim(pg_missing_set& o) {
+  void claim(pg_missing_set&& o) {
     static_assert(!TrackChanges, "Can't use claim with TrackChanges");
-    missing.swap(o.missing);
-    rmissing.swap(o.rmissing);
+    missing = std::move(o.missing);
+    rmissing = std::move(o.rmissing);
   }
 
   /*
@@ -5421,6 +5456,53 @@ static inline std::ostream& operator<<(std::ostream& out, const notify_info_t& n
 	     << " " << n.timeout << "s)";
 }
 
+class object_ref_delta_t {
+  std::map<hobject_t, int> ref_delta;
+
+public:
+  object_ref_delta_t() = default;
+  object_ref_delta_t(const object_ref_delta_t &) = default;
+  object_ref_delta_t(object_ref_delta_t &&) = default;
+
+  object_ref_delta_t(decltype(ref_delta) &&ref_delta)
+    : ref_delta(std::move(ref_delta)) {}
+  object_ref_delta_t(const decltype(ref_delta) &ref_delta)
+    : ref_delta(ref_delta) {}
+
+  object_ref_delta_t &operator=(const object_ref_delta_t &) = default;
+  object_ref_delta_t &operator=(object_ref_delta_t &&) = default;
+
+  void dec_ref(const hobject_t &hoid, unsigned num=1) {
+    mut_ref(hoid, -num);
+  }
+  void inc_ref(const hobject_t &hoid, unsigned num=1) {
+    mut_ref(hoid, num);
+  }
+  void mut_ref(const hobject_t &hoid, int num) {
+    [[maybe_unused]] auto [iter, _] = ref_delta.try_emplace(hoid, 0);
+    iter->second += num;
+    if (iter->second == 0)
+      ref_delta.erase(iter);
+  }
+
+  auto begin() const { return ref_delta.begin(); }
+  auto end() const { return ref_delta.end(); }
+
+  bool operator==(const object_ref_delta_t &rhs) const {
+    return ref_delta == rhs.ref_delta;
+  }
+  bool operator!=(const object_ref_delta_t &rhs) const {
+    return !(*this == rhs);
+  }
+  bool is_empty() {
+    return ref_delta.empty();
+  }
+  uint64_t size() {
+    return ref_delta.size();
+  }
+  friend std::ostream& operator<<(std::ostream& out, const object_ref_delta_t & ci);
+};
+
 struct chunk_info_t {
   typedef enum {
     FLAG_DIRTY = 1, 
@@ -5484,6 +5566,10 @@ struct chunk_info_t {
   void decode(ceph::buffer::list::const_iterator &bl);
   void dump(ceph::Formatter *f) const;
   friend std::ostream& operator<<(std::ostream& out, const chunk_info_t& ci);
+  bool operator==(const chunk_info_t& cit) const;
+  bool operator!=(const chunk_info_t& cit) const {
+    return !(cit == *this);
+  }
 };
 WRITE_CLASS_ENCODER(chunk_info_t)
 std::ostream& operator<<(std::ostream& out, const chunk_info_t& ci);
@@ -5528,6 +5614,55 @@ struct object_manifest_t {
     redirect_target = hobject_t();
     chunk_map.clear();
   }
+
+  /**
+   * calc_refs_to_inc_on_set
+   *
+   * Takes a manifest and returns the set of refs to
+   * increment upon set-chunk
+   *
+   * l should be nullptr if there are no clones, or 
+   * l and g may each be null if the corresponding clone does not exist.
+   * *this contains the set of new references to set
+   *
+   */
+  void calc_refs_to_inc_on_set(
+    const object_manifest_t* g, ///< [in] manifest for clone > *this
+    const object_manifest_t* l, ///< [in] manifest for clone < *this
+    object_ref_delta_t &delta    ///< [out] set of refs to drop
+  ) const;
+
+  /**
+   * calc_refs_to_drop_on_modify
+   *
+   * Takes a manifest and returns the set of refs to
+   * drop upon modification 
+   *
+   * l should be nullptr if there are no clones, or 
+   * l may be null if the corresponding clone does not exist.
+   *
+   */
+  void calc_refs_to_drop_on_modify(
+    const object_manifest_t* l, ///< [in] manifest for previous clone 
+    const ObjectCleanRegions& clean_regions, ///< [in] clean regions
+    object_ref_delta_t &delta    ///< [out] set of refs to drop
+  ) const;
+
+  /**
+   * calc_refs_to_drop_on_removal
+   *
+   * Takes the two adjacent manifests and returns the set of refs to
+   * drop upon removal of the clone containing *this.
+   *
+   * g should be nullptr if *this is on HEAD, l should be nullptr if
+   * *this is on the oldest clone (or head if there are no clones).
+   */
+  void calc_refs_to_drop_on_removal(
+    const object_manifest_t* g, ///< [in] manifest for clone > *this
+    const object_manifest_t* l, ///< [in] manifest for clone < *this
+    object_ref_delta_t &delta    ///< [out] set of refs to drop
+  ) const;
+
   static void generate_test_instances(std::list<object_manifest_t*>& o);
   void encode(ceph::buffer::list &bl) const;
   void decode(ceph::buffer::list::const_iterator &bl);

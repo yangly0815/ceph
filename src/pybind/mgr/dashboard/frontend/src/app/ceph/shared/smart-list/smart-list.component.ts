@@ -1,18 +1,18 @@
-import { Component, Input, OnChanges, OnInit, SimpleChanges } from '@angular/core';
+import { Component, Input, OnChanges, OnInit, SimpleChanges, ViewChild } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import { NgbNav } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 
-import { HostService } from '../../../shared/api/host.service';
-import { OsdService } from '../../../shared/api/osd.service';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
+import { HostService } from '~/app/shared/api/host.service';
+import { OsdService } from '~/app/shared/api/osd.service';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
 import {
   HddSmartDataV1,
   NvmeSmartDataV1,
   SmartDataResult,
   SmartError,
   SmartErrorResult
-} from '../../../shared/models/smart';
+} from '~/app/shared/models/smart';
 
 @Component({
   selector: 'cd-smart-list',
@@ -20,6 +20,9 @@ import {
   styleUrls: ['./smart-list.component.scss']
 })
 export class SmartListComponent implements OnInit, OnChanges {
+  @ViewChild('innerNav')
+  nav: NgbNav;
+
   @Input()
   osdId: number = null;
   @Input()
@@ -33,11 +36,9 @@ export class SmartListComponent implements OnInit, OnChanges {
 
   smartDataColumns: CdTableColumn[];
 
-  constructor(
-    private i18n: I18n,
-    private osdService: OsdService,
-    private hostService: HostService
-  ) {}
+  isEmpty = _.isEmpty;
+
+  constructor(private osdService: OsdService, private hostService: HostService) {}
 
   isSmartError(data: any): data is SmartError {
     return _.get(data, 'error') !== undefined;
@@ -57,16 +58,12 @@ export class SmartListComponent implements OnInit, OnChanges {
       if (this.isSmartError(smartData)) {
         let userMessage = '';
         if (smartData.smartctl_error_code === -22) {
-          userMessage = this.i18n(
-            `Smartctl has received an unknown argument (error code {{code}}). \
+          userMessage = $localize`Smartctl has received an unknown argument \
+(error code ${smartData.smartctl_error_code}). \
 You may be using an incompatible version of smartmontools. Version >= 7.0 of \
-smartmontools is required to successfully retrieve data.`,
-            { code: smartData.smartctl_error_code }
-          );
+smartmontools is required to successfully retrieve data.`;
         } else {
-          userMessage = this.i18n('An error with error code {{code}} occurred.', {
-            code: smartData.smartctl_error_code
-          });
+          userMessage = $localize`An error with error code ${smartData.smartctl_error_code} occurred.`;
         }
         const _result: SmartErrorResult = {
           error: smartData.error,
@@ -152,13 +149,13 @@ smartmontools is required to successfully retrieve data.`,
 
   ngOnInit() {
     this.smartDataColumns = [
-      { prop: 'id', name: this.i18n('ID') },
-      { prop: 'name', name: this.i18n('Name') },
-      { prop: 'raw.value', name: this.i18n('Raw') },
-      { prop: 'thresh', name: this.i18n('Threshold') },
-      { prop: 'value', name: this.i18n('Value') },
-      { prop: 'when_failed', name: this.i18n('When Failed') },
-      { prop: 'worst', name: this.i18n('Worst') }
+      { prop: 'id', name: $localize`ID` },
+      { prop: 'name', name: $localize`Name` },
+      { prop: 'raw.value', name: $localize`Raw` },
+      { prop: 'thresh', name: $localize`Threshold` },
+      { prop: 'value', name: $localize`Value` },
+      { prop: 'when_failed', name: $localize`When Failed` },
+      { prop: 'worst', name: $localize`Worst` }
     ];
   }
 

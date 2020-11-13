@@ -47,6 +47,7 @@ extern "C" {
 #define LIBRBD_SUPPORTS_IOVEC 1
 #define LIBRBD_SUPPORTS_WATCH 0
 #define LIBRBD_SUPPORTS_WRITESAME 1
+#define LIBRBD_SUPPORTS_WRITE_ZEROES 1
 
 #if __GNUC__ >= 4
   #define CEPH_RBD_API          __attribute__ ((visibility ("default")))
@@ -117,11 +118,11 @@ typedef struct {
 #define RBD_MAX_IMAGE_NAME_SIZE 96
 #define RBD_MAX_BLOCK_NAME_SIZE 24
 
-#define RBD_SNAP_CREATE_SKIP_QUIESCE		1 << 0
-#define RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR	1 << 1
+#define RBD_SNAP_CREATE_SKIP_QUIESCE		(1 << 0)
+#define RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR	(1 << 1)
 
-#define RBD_SNAP_REMOVE_UNPROTECT	1 << 0
-#define RBD_SNAP_REMOVE_FLATTEN		1 << 1
+#define RBD_SNAP_REMOVE_UNPROTECT	(1 << 0)
+#define RBD_SNAP_REMOVE_FLATTEN		(1 << 1)
 #define RBD_SNAP_REMOVE_FORCE		(RBD_SNAP_REMOVE_UNPROTECT | RBD_SNAP_REMOVE_FLATTEN)
 
 /**
@@ -327,6 +328,7 @@ typedef enum {
   RBD_IMAGE_MIGRATION_STATE_PREPARED = 2,
   RBD_IMAGE_MIGRATION_STATE_EXECUTING = 3,
   RBD_IMAGE_MIGRATION_STATE_EXECUTED = 4,
+  RBD_IMAGE_MIGRATION_STATE_ABORTING = 5,
 } rbd_image_migration_state_t;
 
 typedef struct {
@@ -364,6 +366,11 @@ typedef enum {
   RBD_POOL_STAT_OPTION_TRASH_MAX_PROVISIONED_BYTES,
   RBD_POOL_STAT_OPTION_TRASH_SNAPSHOTS
 } rbd_pool_stat_option_t;
+
+/* rbd_write_zeroes / rbd_aio_write_zeroes flags */
+enum {
+  RBD_WRITE_ZEROES_FLAG_THICK_PROVISION = (1U<<0), /* fully allocated zeroed extent */
+};
 
 CEPH_RBD_API void rbd_image_options_create(rbd_image_options_t* opts);
 CEPH_RBD_API void rbd_image_options_destroy(rbd_image_options_t opts);
@@ -469,6 +476,9 @@ CEPH_RBD_API int rbd_migration_prepare(rados_ioctx_t ioctx,
                                        rados_ioctx_t dest_ioctx,
                                        const char *dest_image_name,
                                        rbd_image_options_t opts);
+CEPH_RBD_API int rbd_migration_prepare_import(
+    const char *source_spec, rados_ioctx_t dest_ioctx,
+    const char *dest_image_name, rbd_image_options_t opts);
 CEPH_RBD_API int rbd_migration_execute(rados_ioctx_t ioctx,
                                        const char *image_name);
 CEPH_RBD_API int rbd_migration_execute_with_progress(rados_ioctx_t ioctx,
@@ -718,6 +728,10 @@ CEPH_RBD_API int rbd_get_parent_info2(rbd_image_t image,
 CEPH_RBD_API int rbd_get_parent(rbd_image_t image,
                                 rbd_linked_image_spec_t *parent_image,
                                 rbd_snap_spec_t *parent_snap);
+
+CEPH_RBD_API int rbd_get_migration_source_spec(rbd_image_t image,
+                                               char* source_spec,
+                                               size_t* max_len);
 
 CEPH_RBD_API int rbd_get_flags(rbd_image_t image, uint64_t *flags);
 CEPH_RBD_API int rbd_get_group(rbd_image_t image, rbd_group_info_t *group_info,
@@ -1100,10 +1114,15 @@ CEPH_RBD_API ssize_t rbd_write2(rbd_image_t image, uint64_t ofs, size_t len,
                                 const char *buf, int op_flags);
 CEPH_RBD_API int rbd_discard(rbd_image_t image, uint64_t ofs, uint64_t len);
 CEPH_RBD_API ssize_t rbd_writesame(rbd_image_t image, uint64_t ofs, size_t len,
-                                   const char *buf, size_t data_len, int op_flags);
+                                   const char *buf, size_t data_len,
+                                   int op_flags);
+CEPH_RBD_API ssize_t rbd_write_zeroes(rbd_image_t image, uint64_t ofs,
+                                      size_t len, int zero_flags,
+                                      int op_flags);
 CEPH_RBD_API ssize_t rbd_compare_and_write(rbd_image_t image, uint64_t ofs,
                                            size_t len, const char *cmp_buf,
-                                           const char *buf, uint64_t *mismatch_off,
+                                           const char *buf,
+                                           uint64_t *mismatch_off,
                                            int op_flags);
 
 CEPH_RBD_API int rbd_aio_write(rbd_image_t image, uint64_t off, size_t len,
@@ -1131,10 +1150,15 @@ CEPH_RBD_API int rbd_aio_discard(rbd_image_t image, uint64_t off, uint64_t len,
 CEPH_RBD_API int rbd_aio_writesame(rbd_image_t image, uint64_t off, size_t len,
                                    const char *buf, size_t data_len,
                                    rbd_completion_t c, int op_flags);
+CEPH_RBD_API int rbd_aio_write_zeroes(rbd_image_t image, uint64_t off,
+                                      size_t len, rbd_completion_t c,
+                                      int zero_flags, int op_flags);
 CEPH_RBD_API ssize_t rbd_aio_compare_and_write(rbd_image_t image,
                                                uint64_t off, size_t len,
-                                               const char *cmp_buf, const char *buf,
-                                               rbd_completion_t c, uint64_t *mismatch_off,
+                                               const char *cmp_buf,
+                                               const char *buf,
+                                               rbd_completion_t c,
+                                               uint64_t *mismatch_off,
                                                int op_flags);
 
 CEPH_RBD_API int rbd_aio_create_completion(void *cb_arg,
@@ -1238,6 +1262,9 @@ CEPH_RBD_API int rbd_aio_mirror_image_get_info(rbd_image_t image,
                                                rbd_mirror_image_info_t *mirror_image_info,
                                                size_t info_size,
                                                rbd_completion_t c);
+CEPH_RBD_API int rbd_aio_mirror_image_get_mode(rbd_image_t image,
+                                               rbd_mirror_image_mode_t *mode,
+                                               rbd_completion_t c);
 
 CEPH_RBD_API int rbd_aio_mirror_image_get_global_status(
     rbd_image_t image,
@@ -1247,6 +1274,11 @@ CEPH_RBD_API int rbd_aio_mirror_image_get_status(
     rbd_image_t image, rbd_mirror_image_status_t *mirror_image_status,
     size_t status_size, rbd_completion_t c)
   CEPH_RBD_DEPRECATED;
+
+CEPH_RBD_API int rbd_aio_mirror_image_create_snapshot(rbd_image_t image,
+                                                      uint32_t flags,
+                                                      uint64_t *snap_id,
+                                                      rbd_completion_t c);
 
 // RBD groups support functions
 CEPH_RBD_API int rbd_group_create(rados_ioctx_t p, const char *name);
@@ -1394,9 +1426,11 @@ CEPH_RBD_API int rbd_quiesce_watch(rbd_image_t image,
  * Notify quiesce is complete
  *
  * @param image the image to notify
+ * @param handle which watch is complete
  * @param r the return code
  */
-CEPH_RADOS_API void rbd_quiesce_complete(rbd_image_t image, int r);
+CEPH_RADOS_API void rbd_quiesce_complete(rbd_image_t image, uint64_t handle,
+                                         int r);
 
 /**
  * Unregister a quiesce/unquiesce watcher.

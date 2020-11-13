@@ -1,13 +1,13 @@
-@import 'defaults.scss';
+@use './src/styles/vendor/variables' as vv;
 
 .select-menu-item {
-  border-bottom: 1px solid $color-transparent;
+  border-bottom: 1px solid vv.$datatable-divider-color;
   cursor: pointer;
   display: block;
-  font-size: 12px;
+  font-size: 1rem;
 
   &:hover {
-    background-color: $color-whitesmoke-gray;
+    background-color: vv.$gray-200;
   }
 }
 

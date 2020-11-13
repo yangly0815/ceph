@@ -7,6 +7,7 @@
 #include "common/dout.h"
 #include "common/errno.h"
 #include "include/stringify.h"
+#include "librbd/cache/pwl/InitRequest.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
@@ -114,7 +115,7 @@ void PostAcquireRequest<I>::send_open_journal() {
   }
   if (!journal_enabled) {
     apply();
-    finish();
+    send_open_image_cache();
     return;
   }
 
@@ -172,11 +173,46 @@ void PostAcquireRequest<I>::handle_allocate_journal_tag(int r) {
     return;
   }
 
+  send_open_image_cache();
+}
+
+template <typename I>
+void PostAcquireRequest<I>::send_open_image_cache() {
+  CephContext *cct = m_image_ctx.cct;
+  ldout(cct, 10) << dendl;
+
+  using klass = PostAcquireRequest<I>;
+  Context *ctx = create_async_context_callback(
+    m_image_ctx, create_context_callback<
+    klass, &klass::handle_open_image_cache>(this));
+  cache::pwl::InitRequest<I> *req = cache::pwl::InitRequest<I>::create(
+    m_image_ctx, ctx);
+  req->send();
+}
+
+template <typename I>
+void PostAcquireRequest<I>::handle_open_image_cache(int r) {
+  CephContext *cct = m_image_ctx.cct;
+  ldout(cct, 10) << "r=" << r << dendl;
+
+  save_result(r);
+  if (r < 0) {
+    lderr(cct) << "failed to open image cache: " << cpp_strerror(r)
+               << dendl;
+    send_close_journal();
+    return;
+  }
+
   finish();
 }
 
 template <typename I>
 void PostAcquireRequest<I>::send_close_journal() {
+  if (m_journal == nullptr) {
+    send_close_object_map();
+    return;
+  }
+
   CephContext *cct = m_image_ctx.cct;
   ldout(cct, 10) << dendl;
 

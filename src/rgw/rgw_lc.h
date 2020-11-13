@@ -17,10 +17,10 @@
 #include "common/iso_8601.h"
 #include "common/Thread.h"
 #include "rgw_common.h"
-#include "rgw_rados.h"
 #include "cls/rgw/cls_rgw_types.h"
 #include "rgw_tag.h"
 #include "rgw_sal.h"
+#include "rgw_rados.h"
 
 #include <atomic>
 #include <tuple>
@@ -152,7 +152,11 @@ public:
     decode(storage_class, bl);
     DECODE_FINISH(bl);
   }
-  void dump(Formatter *f) const;
+  void dump(Formatter *f) const {  
+    f->dump_string("days", days);
+    f->dump_string("date", date);
+    f->dump_string("storage_class", storage_class);
+  }
 };
 WRITE_CLASS_ENCODER(LCTransition)
 
@@ -180,9 +184,6 @@ class LCFilter
   bool has_multi_condition() const {
     if (obj_tags.count() > 1)
       return true;
-    else if (has_prefix() && has_tags())
-      return true;
-
     return false;
   }
 
@@ -369,6 +370,14 @@ struct transition_action
   boost::optional<ceph::real_time> date;
   string storage_class;
   transition_action() : days(0) {}
+  void dump(Formatter *f) const {
+    if (!date) {
+      f->dump_int("days", days);
+    } else {
+      utime_t ut(*date);
+      f->dump_stream("date") << ut;
+    }
+  }
 };
 
 /* XXX why not LCRule? */
@@ -522,7 +531,7 @@ public:
   int remove_bucket_config(RGWBucketInfo& bucket_info,
                            const map<string, bufferlist>& bucket_attrs);
 
-  CephContext *get_cct() const override { return store->ctx(); }
+  CephContext *get_cct() const override { return cct; }
   unsigned get_subsys() const;
   std::ostream& gen_prefix(std::ostream& out) const;
 
@@ -544,6 +553,14 @@ std::string s3_expiration_header(
   const RGWObjTags& obj_tagset,
   const ceph::real_time& mtime,
   const std::map<std::string, buffer::list>& bucket_attrs);
+
+bool s3_multipart_abort_header(
+  DoutPrefixProvider* dpp,
+  const rgw_obj_key& obj_key,
+  const ceph::real_time& mtime,
+  const std::map<std::string, buffer::list>& bucket_attrs,
+  ceph::real_time& abort_date,
+  std::string& rule_id);
 
 } // namespace rgw::lc
 

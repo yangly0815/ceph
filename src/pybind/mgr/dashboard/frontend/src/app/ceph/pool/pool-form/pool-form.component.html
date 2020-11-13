@@ -107,9 +107,9 @@
                     *ngIf="form.showError('pgNum', formDir, '34')"
                     i18n>Your cluster can't handle this many PGs. Please recalculate the PG amount needed.</span>
               <span class="form-text text-muted">
-                <a i18n
-                   target="_blank"
-                   href="http://ceph.com/pgcalc">Calculation help</a>
+                <cd-doc section="pgs"
+                        docText="Calculation help"
+                        i18n-docText></cd-doc>
               </span>
               <span class="form-text text-muted"
                     *ngIf="externalPgChange"
@@ -143,6 +143,10 @@
                     *ngIf="form.showError('size', formDir)"
                     i18n>The size specified is out of range. A value from
                 {{ getMinSize() }} to {{ getMaxSize() }} is usable.</span>
+              <span class="text-warning-dark"
+                    *ngIf="form.getValue('size') === 1"
+                    i18n>A size of 1 will not create a replication of the
+                object. The 'Replicated size' includes the object itself.</span>
             </div>
           </div>
 
@@ -321,6 +325,10 @@
                             [ngClass]="{'active': data.crushInfo}"
                             id="crush-info-button"
                             type="button"
+                            ngbTooltip="Placement and
+                            replication strategies or distribution policies that allow to
+                            specify how CRUSH places data replicas."
+                            i18n-ngbTooltip
                             (click)="data.crushInfo = !data.crushInfo">
                       <i [ngClass]="[icons.questionCircle]"
                          aria-hidden="true"></i>

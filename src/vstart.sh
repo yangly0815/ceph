@@ -163,7 +163,7 @@ rgw_compression=""
 lockdep=${LOCKDEP:-1}
 spdk_enabled=0 #disable SPDK by default
 zoned_enabled=0
-pci_id=""
+io_uring_enabled=0
 
 with_mgr_dashboard=true
 if [[ "$(get_cmake_variable WITH_MGR_DASHBOARD_FRONTEND)" != "ON" ]] ||
@@ -222,7 +222,7 @@ usage=$usage"\t--short: short object names only; necessary for ext4 dev\n"
 usage=$usage"\t--nolockdep disable lockdep\n"
 usage=$usage"\t--multimds <count> allow multimds with maximum active count\n"
 usage=$usage"\t--without-dashboard: do not run using mgr dashboard\n"
-usage=$usage"\t--bluestore-spdk <vendor>:<device>: enable SPDK and specify the PCI-ID of the NVME device\n"
+usage=$usage"\t--bluestore-spdk: enable SPDK and with a comma-delimited list of PCI-IDs of NVME device (e.g, 0000:81:00.0)\n"
 usage=$usage"\t--msgr1: use msgr1 only\n"
 usage=$usage"\t--msgr2: use msgr2 only\n"
 usage=$usage"\t--msgr21: use msgr2 and msgr1\n"
@@ -230,6 +230,7 @@ usage=$usage"\t--crimson: use crimson-osd instead of ceph-osd\n"
 usage=$usage"\t--osd-args: specify any extra osd specific options\n"
 usage=$usage"\t--bluestore-devs: comma-separated list of blockdevs to use for bluestore\n"
 usage=$usage"\t--bluestore-zoned: blockdevs listed by --bluestore-devs are zoned devices (HM-SMR HDD or ZNS SSD)\n"
+usage=$usage"\t--bluestore-io-uring: enable io_uring backend\n"
 usage=$usage"\t--inc-osd: append some more osds into existing vcluster\n"
 usage=$usage"\t--cephadm: enable cephadm orchestrator with ~/.ssh/id_rsa[.pub]\n"
 usage=$usage"\t--no-parallel: dont start all OSDs in parallel\n"
@@ -425,13 +426,13 @@ case $1 in
     --without-dashboard)
         with_mgr_dashboard=false
         ;;
-    --bluestore-spdk )
+    --bluestore-spdk)
         [ -z "$2" ] && usage_exit
-        pci_id="$2"
+        IFS=',' read -r -a bluestore_spdk_dev <<< "$2"
         spdk_enabled=1
         shift
         ;;
-    --bluestore-devs )
+    --bluestore-devs)
         IFS=',' read -r -a bluestore_dev <<< "$2"
         for dev in "${bluestore_dev[@]}"; do
             if [ ! -b $dev -o ! -w $dev ]; then
@@ -441,8 +442,11 @@ case $1 in
         done
         shift
         ;;
-    --bluestore-zoned )
+    --bluestore-zoned)
         zoned_enabled=1
+        ;;
+    --bluestore-io-uring)
+        io_uring_enabled=1
         ;;
     * )
         usage_exit
@@ -515,14 +519,6 @@ wconf() {
     fi
 }
 
-get_pci_selector() {
-    which_pci=$1
-    lspci -mm -n -D -d $pci_id | cut -d ' ' -f 1 | sed -n $which_pci'p'
-}
-
-get_pci_selector_num() {
-    lspci -mm -n -D -d $pci_id | cut -d' ' -f 1 | wc -l
-}
 
 do_rgw_conf() {
 
@@ -637,14 +633,6 @@ EOF
     fi
     if [ "$objectstore" == "bluestore" ]; then
         if [ "$spdk_enabled" -eq 1 ]; then
-            if [ "$(get_pci_selector_num)" -eq 0 ]; then
-                echo "Not find the specified NVME device, please check." >&2
-                exit
-            fi
-            if [ $(get_pci_selector_num) -lt $CEPH_NUM_OSD ]; then
-                echo "OSD number ($CEPH_NUM_OSD) is greater than NVME SSD number ($(get_pci_selector_num)), please check." >&2
-                exit
-            fi
             BLUESTORE_OPTS="        bluestore_block_db_path = \"\"
         bluestore_block_db_size = 0
         bluestore_block_db_create = false
@@ -661,12 +649,16 @@ EOF
         bluestore block wal create = true"
         fi
         if [ "$zoned_enabled" -eq 1 ]; then
-            BLUESTORE_OPTS="${BLUESTORE_OPTS}
+            BLUESTORE_OPTS+="
         bluestore min alloc size = 65536
         bluestore prefer deferred size = 0
         bluestore prefer deferred size hdd = 0
         bluestore prefer deferred size ssd = 0
         bluestore allocator = zoned"
+        fi
+        if [ "$io_uring_enabled" -eq 1 ]; then
+            BLUESTORE_OPTS+="
+        bdev ioring = true"
         fi
     fi
     wconf <<EOF
@@ -734,6 +726,40 @@ $extra_conf
         mon cluster log file = $CEPH_OUT_DIR/cluster.mon.\$id.log
         osd pool default erasure code profile = plugin=jerasure technique=reed_sol_van k=2 m=1 crush-failure-domain=osd
 EOF
+}
+
+write_logrotate_conf() {
+    out_dir=$(pwd)"/out/*.log"
+
+    cat << EOF
+$out_dir
+{
+    rotate 5
+    size 1G
+    copytruncate
+    compress
+    notifempty
+    missingok
+    sharedscripts
+    postrotate
+        # NOTE: assuring that the absence of one of the following processes
+        # won't abort the logrotate command.
+        killall -u $USER -q -1 ceph-mon ceph-mgr ceph-mds ceph-osd ceph-fuse radosgw rbd-mirror || echo ""
+    endscript
+}
+EOF
+}
+
+init_logrotate() {
+    logrotate_conf_path=$(pwd)"/logrotate.conf"
+    logrotate_state_path=$(pwd)"/logrotate.state"
+
+    if ! test -a $logrotate_conf_path; then
+        if test -a $logrotate_state_path; then
+            rm -f $logrotate_state_path
+        fi
+        write_logrotate_conf > $logrotate_conf_path
+    fi
 }
 
 start_mon() {
@@ -842,7 +868,7 @@ start_osd() {
 EOF
             if [ "$spdk_enabled" -eq 1 ]; then
                 wconf <<EOF
-        bluestore_block_path = spdk:$(get_pci_selector $((osd+1)))
+        bluestore_block_path = spdk:${bluestore_spdk_dev[$osd]}
 EOF
             fi
 
@@ -988,11 +1014,17 @@ EOF
 
     if [ "$cephadm" -eq 1 ]; then
         debug echo Enabling cephadm orchestrator
+	if [ "$new" -eq 1 ]; then
+		digest=$(curl -s \
+		https://registry.hub.docker.com/v2/repositories/ceph/daemon-base/tags/latest-master-devel \
+		| jq -r '.images[].digest')
+		ceph_adm config set global container_image "docker.io/ceph/daemon-base@$digest"
+	fi
         ceph_adm config-key set mgr/cephadm/ssh_identity_key -i ~/.ssh/id_rsa
         ceph_adm config-key set mgr/cephadm/ssh_identity_pub -i ~/.ssh/id_rsa.pub
         ceph_adm mgr module enable cephadm
         ceph_adm orch set backend cephadm
-        ceph_adm orch host add $HOSTNAME
+        ceph_adm orch host add "$(hostname)"
         ceph_adm orch apply crash '*'
         ceph_adm config set mgr mgr/cephadm/allow_ptrace true
     fi
@@ -1064,12 +1096,12 @@ EOF
 }
 
 # Ganesha Daemons requires nfs-ganesha nfs-ganesha-ceph nfs-ganesha-rados-grace
-# nfs-ganesha-rados-urls (version 2.8.3 and above) packages installed. On
+# nfs-ganesha-rados-urls (version 3.3 and above) packages installed. On
 # Fedora>=31 these packages can be installed directly with 'dnf'. For CentOS>=8
 # the packages are available at
 # https://wiki.centos.org/SpecialInterestGroup/Storage
-# Similarly for Ubuntu 16.04 follow the instructions on
-# https://launchpad.net/~nfs-ganesha/+archive/ubuntu/nfs-ganesha-2.8
+# Similarly for Ubuntu>=16.04 follow the instructions on
+# https://launchpad.net/~nfs-ganesha
 
 start_ganesha() {
     cluster_id="vstart"
@@ -1111,8 +1143,6 @@ start_ganesha() {
 
         MDCACHE {
            Dir_Chunk = 0;
-           NParts = 1;
-           Cache_Size = 1;
         }
 
         NFSv4 {
@@ -1205,7 +1235,7 @@ fi
 [ -d $CEPH_OUT_DIR  ] || mkdir -p $CEPH_OUT_DIR
 [ -d $CEPH_DEV_DIR  ] || mkdir -p $CEPH_DEV_DIR
 if [ $inc_osd_num -eq 0 ]; then
-    $SUDO rm -rf $CEPH_OUT_DIR/*
+    $SUDO find "$CEPH_OUT_DIR" -type f -delete
 fi
 [ -d gmon ] && $SUDO rm -rf gmon/*
 
@@ -1317,6 +1347,11 @@ mds_debug_scatterstat = true
 mds_verify_scatter = true
 EOF
     fi
+    if [ "$cephadm" -gt 0 ]; then
+        debug echo Setting mon public_network ...
+        public_network=$(ip route list | grep -w "$IP" | awk '{print $1}')
+        ceph_adm config set mon public_network $public_network
+    fi
 fi
 
 if [ $CEPH_NUM_MGR -gt 0 ]; then
@@ -1355,7 +1390,7 @@ do
     [ $fs -eq $CEPH_NUM_FS ] && break
     fs=$(($fs + 1))
     if [ "$CEPH_MAX_MDS" -gt 1 ]; then
-        ceph_adm fs set "cephfs_${name}" max_mds "$CEPH_MAX_MDS"
+        ceph_adm fs set "${name}" max_mds "$CEPH_MAX_MDS"
     fi
 done
 
@@ -1565,3 +1600,5 @@ if [ -f "$STRAY_CONF_PATH" -a -n "$conf_fn" -a ! "$conf_fn" -ef "$STRAY_CONF_PAT
     echo "NOTE:"
     echo "    Remember to restart cluster after removing $STRAY_CONF_PATH"
 fi
+
+init_logrotate

@@ -1,10 +1,8 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
-
-import { configureTestBed, i18nProviders } from '../../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { MgrModuleDetailsComponent } from './mgr-module-details.component';
 
 describe('MgrModuleDetailsComponent', () => {
@@ -13,8 +11,7 @@ describe('MgrModuleDetailsComponent', () => {
 
   configureTestBed({
     declarations: [MgrModuleDetailsComponent],
-    imports: [HttpClientTestingModule, SharedModule, NgbNavModule],
-    providers: [i18nProviders]
+    imports: [HttpClientTestingModule, SharedModule]
   });
 
   beforeEach(() => {

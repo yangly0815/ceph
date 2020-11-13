@@ -16,7 +16,9 @@
 #include "include/uuid.h"
 
 #include "os/Transaction.h"
+#include "crimson/os/seastore/segment_cleaner.h"
 #include "crimson/os/futurized_store.h"
+#include "transaction.h"
 
 namespace crimson::os::seastore {
 
@@ -28,8 +30,6 @@ using OnodeRef = boost::intrusive_ptr<Onode>;
 class Journal;
 class LBAManager;
 class TransactionManager;
-class Transaction;
-using TransactionRef = std::unique_ptr<Transaction>;
 class Cache;
 
 class SeaStore final : public FuturizedStore {
@@ -70,10 +70,17 @@ public:
     CollectionRef c,
     const ghobject_t& oid) final;
 
-  seastar::future<omap_values_t> omap_get_values(
+  read_errorator::future<omap_values_t> omap_get_values(
     CollectionRef c,
     const ghobject_t& oid,
     const omap_keys_t& keys) final;
+
+  /// Retrieves paged set of values > start (if present)
+  read_errorator::future<std::tuple<bool, omap_values_t>> omap_get_values(
+    CollectionRef c,           ///< [in] collection
+    const ghobject_t &oid,     ///< [in] oid
+    const std::optional<std::string> &start ///< [in] start, empty for begin
+    ) final; ///< @return <done, values> values.empty() iff done
 
   seastar::future<bufferlist> omap_get_header(
     CollectionRef c,
@@ -84,13 +91,6 @@ public:
     const ghobject_t& start,
     const ghobject_t& end,
     uint64_t limit) const final;
-
-  /// Retrieves paged set of values > start (if present)
-  seastar::future<std::tuple<bool, omap_values_t>> omap_get_values(
-    CollectionRef c,           ///< [in] collection
-    const ghobject_t &oid,     ///< [in] oid
-    const std::optional<std::string> &start ///< [in] start, empty for begin
-    ) final; ///< @return <done, values> values.empty() iff done
 
   seastar::future<CollectionRef> create_new_collection(const coll_t& cid) final;
   seastar::future<CollectionRef> open_collection(const coll_t& cid) final;
@@ -120,6 +120,7 @@ public:
 
 private:
   std::unique_ptr<SegmentManager> segment_manager;
+  std::unique_ptr<SegmentCleaner> segment_cleaner;
   std::unique_ptr<Cache> cache;
   std::unique_ptr<Journal> journal;
   std::unique_ptr<LBAManager> lba_manager;

@@ -124,6 +124,71 @@ aspects of your Ceph cluster:
 * **Ceph Manager Modules**: Enable and disable all Ceph Manager modules, change
   the module-specific configuration settings.
 
+Overview of the Dashboard Landing Page
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Displays overall cluster status, performance and capacity metrics. Gives instant
+feedback to changes in the cluster and provides easy access to subpages of the
+dashboard.
+
+.. _dashboard-landing-page-status:
+
+Status
+""""""
+
+* **Cluster Status**: Displays overall cluster health. In case of any error it
+  displays a short description of the error and provides a link to the logs.
+* **Hosts**: Displays the total number of hosts associated to the cluster and
+  links to the subpage displaying the list and descriptions of all hosts.
+* **Monitors**: Displays the total number of all MONs and their quorum status,
+  open sessions and links to the subpage providing a list and descriptions of all
+  the MONs.
+* **OSDs**: Displays total number of object storage daemons for Ceph (ceph-osds)
+  and the total number of OSDs running (up), total number of OSDs in the cluster
+  (in) and total number of OSDs out of the cluster (out). Provides link to the
+  subpage containing a list of all OSDs and related management actions.
+* **Managers**: Displays the total number of active and standby Ceph Manager
+  daemons (ceph-mgr) running alongside monitor daemons.
+* **Object Gateway**: Displays the total number of active object gateways and
+  provides a link to the subpage displaying a list of all object gateway daemons.
+* **Metadata Servers**: Displays total number of active and standby metadata
+  servers daemons for CephFS (ceph-mds).
+* **iSCSI Gateways**: Display the total number of iSCSI gateways available, total
+  number of active iSCSI gateways (up) and total number of inactive iSCSI
+  Gateways (down). Provides link to the subpage providing a list of all iSCSI
+  Gateways.
+
+.. _dashboard-landing-page-capacity:
+
+Capacity
+""""""""
+
+* **Raw Capacity**: Displays the total physical capacity used out of the total
+  physical capacity provided by the ceph storage nodes (OSDs).
+* **Objects**: Displays the number of objects in use and the status of objects
+  including the percentage of healthy, misplaced, degraded and unfound status of
+  objects. An object is the smallest unit of data storage in Ceph cluster.
+* **PG Status**: Displays the total number of placement groups in use and the
+  status of placement groups, including the percentage of clean, working,
+  warning and unknown status of placement groups.
+* **Pools**: Displays the total number of pools and links to the subpage that
+  lists all Ceph pools and their details.
+* **PGs per OSD**: Displays the number of placement groups per object storage
+  daemons.
+
+.. _dashboard-landing-page-performance:
+
+Performance
+"""""""""""
+
+* **Client READ/Write**: Displays an overview of rate the read/write operations,
+  the total number of input and output operations performed by the cluster on
+  storage devices on the client side.
+* **Client Throughput**: Displays the data transfer rate to and from Ceph clients.
+* **Recovery throughput**: Displays rate of moving the data back to the cluster
+  if the cluster is recovering to parity when the hard drive is lost.
+* **Scrubbing**: Displays whether Ceph is comparing the data to other pieces of
+  data to ensure there is no data corruption on the cluster's storage devices.
 
 Supported Browsers
 ^^^^^^^^^^^^^^^^^^
@@ -131,13 +196,16 @@ Supported Browsers
 Ceph Dashboard is primarily tested and developed using the following web
 browsers:
 
-+-----------------------------------------------+----------+
-|                    Browser                    | Versions |
-+===============================================+==========+
-| `Chrome <https://www.google.com/chrome/>`_    | 68+      |
-+-----------------------------------------------+----------+
-| `Firefox <https://www.mozilla.org/firefox/>`_ | 61+      |
-+-----------------------------------------------+----------+
++---------------------------------------------------------------+---------------------------------------+
+|                            Browser                            |               Versions                |
++===============================================================+=======================================+
+| `Chrome <https://www.google.com/chrome/>`_ and                | latest 2 major versions               |
+| `Chromium <https://www.chromium.org/>`_ based browsers        |                                       |
++---------------------------------------------------------------+---------------------------------------+
+| `Firefox <https://www.mozilla.org/firefox/>`_                 | latest 2 major versions               |
++---------------------------------------------------------------+---------------------------------------+
+| `Firefox ESR <https://www.mozilla.org/firefox/enterprise/>`_  | latest major version                  |
++---------------------------------------------------------------+---------------------------------------+
 
 While Ceph Dashboard might work in older browsers, we cannot guarantee it and
 recommend you to update your browser to the latest version.
@@ -221,6 +289,8 @@ wanted or required. See :ref:`dashboard-proxy-configuration` for more details.
 
     $ ceph mgr module disable dashboard
     $ ceph mgr module enable dashboard
+
+.. _dashboard-host-name-and-port:
 
 Host Name and Port
 ^^^^^^^^^^^^^^^^^^
@@ -402,71 +472,111 @@ separate application that provides machine metrics.
   <https://prometheus.io/docs/operating/security/>` for more detailed
   information.
 
-Grafana and Prometheus are likely going to be bundled and installed by some
-orchestration tools along Ceph in the near future, but currently, you will have
-to install and configure both manually. After you have installed Prometheus and
-Grafana on your preferred hosts, proceed with the following steps.
+Installation and Configuration using cephadm
+""""""""""""""""""""""""""""""""""""""""""""
 
-1. Enable the Ceph Exporter which comes as Ceph Manager module by running::
+Grafana and Prometheus can be installed using :ref:`cephadm`. They will
+automatically be configured by `cephadm`. Please see
+:ref:`mgr-cephadm-monitoring` documentation for more details on how to use
+cephadm for installing and configuring Prometheus and Grafana.
 
-    $ ceph mgr module enable prometheus
+Manual Installation and Configuration
+"""""""""""""""""""""""""""""""""""""
 
-More details can be found in the documentation of the :ref:`mgr-prometheus`.
+The following process describes how to configure Grafana and Prometheus
+manually. After you have installed Prometheus, Grafana and the Node exporter
+on your preferred hosts, proceed with the following steps.
 
-2. Add the corresponding scrape configuration to Prometheus. This may look
-   like::
+#.  Enable the Ceph Exporter which comes as Ceph Manager module by running::
 
-    global:
-      scrape_interval: 5s
+      $ ceph mgr module enable prometheus
 
-    scrape_configs:
-      - job_name: 'prometheus'
-        static_configs:
-          - targets: ['localhost:9090']
-      - job_name: 'ceph'
-        static_configs:
-          - targets: ['localhost:9283']
-      - job_name: 'node-exporter'
-        static_configs:
-          - targets: ['localhost:9100']
+    More details can be found in the documentation of the :ref:`mgr-prometheus`.
 
-3. Add Prometheus as data source to Grafana
+#.  Add the corresponding scrape configuration to Prometheus. This may look
+    like::
 
-4. Install the `vonage-status-panel and grafana-piechart-panel` plugins using::
+      global:
+        scrape_interval: 5s
 
-    grafana-cli plugins install vonage-status-panel
-    grafana-cli plugins install grafana-piechart-panel
+      scrape_configs:
+        - job_name: 'prometheus'
+          static_configs:
+            - targets: ['localhost:9090']
+        - job_name: 'ceph'
+          static_configs:
+            - targets: ['localhost:9283']
+        - job_name: 'node-exporter'
+          static_configs:
+            - targets: ['localhost:9100']
 
-5. Add the Dashboards to Grafana:
+    .. note::
 
-  Dashboards can be added to Grafana by importing dashboard jsons.
-  Following command can be used for downloading json files::
+      Please note that in the aforementioned example, Prometheus is configured
+      to scrape data from itself (port 9090), the Ceph manager module
+      `prometheus` (port 9283), which exports Ceph internal data and the Node
+      exporter (port 9100), which provides metrics of a machine.
 
-    wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/grafana/dashboards/<Dashboard-name>.json
+      Depending on your configuration, you may need to change the hostname in
+      this configuration or add additional configuration entries for the Node
+      exporter. It is unlikely that you will need to change the provided ports.
 
-  You can find all the dashboard jsons `here <https://github.com/ceph/ceph/tree/
-  master/monitoring/grafana/dashboards>`_ .
+      Moreover, you don't *need* to have more than one target for Ceph specific
+      data, provided by the `prometheus` mgr module. But it is recommended to
+      configure Prometheus to scrape Ceph specific data from all existing Ceph
+      managers. This enables a built-in high availability mechanism, where
+      services run on a manager will be restarted automatically on a second
+      manager instance if one Ceph Manager goes down.
 
-  For Example, for ceph-cluster overview you can use::
+#.  Add Prometheus as data source to Grafana `using the Grafana Web UI
+    <https://grafana.com/docs/grafana/latest/features/datasources/add-a-data-source/>`_.
 
-    wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/grafana/dashboards/ceph-cluster.json
+#.  Install the `vonage-status-panel and grafana-piechart-panel` plugins using::
 
-6. Configure Grafana in `/etc/grafana/grafana.ini` to adapt anonymous mode::
+      grafana-cli plugins install vonage-status-panel
+      grafana-cli plugins install grafana-piechart-panel
 
-    [auth.anonymous]
-    enabled = true
-    org_name = Main Org.
-    org_role = Viewer
+#.  Add the Dashboards to Grafana:
 
-  In newer versions of Grafana (starting with 6.2.0-beta1) a new setting named
-  ``allow_embedding`` has been introduced. This setting needs to be explicitly
-  set to ``true`` for the Grafana integration in Ceph Dashboard to work, as its
-  default is ``false``.
+    Dashboards can be added to Grafana by importing dashboard JSON files.
+    Use the following command to download the JSON files::
 
-  ::
+      wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/grafana/dashboards/<Dashboard-name>.json
 
-    [security]
-    allow_embedding = true
+    You can find all the dashboard JSON files `here <https://github.com/ceph/ceph/tree/
+    master/monitoring/grafana/dashboards>`_ .
+
+    For Example, for ceph-cluster overview you can use::
+
+      wget https://raw.githubusercontent.com/ceph/ceph/master/monitoring/grafana/dashboards/ceph-cluster.json
+
+#.  Configure Grafana in ``/etc/grafana/grafana.ini`` to enable anonymous mode::
+
+      [auth.anonymous]
+      enabled = true
+      org_name = Main Org.
+      org_role = Viewer
+
+    In newer versions of Grafana (starting with 6.2.0-beta1) a new setting named
+    ``allow_embedding`` has been introduced. This setting needs to be explicitly
+    set to ``true`` for the Grafana integration in Ceph Dashboard to work, as its
+    default is ``false``.
+
+    ::
+
+      [security]
+      allow_embedding = true
+
+Enabling RBD-Image monitoring
+"""""""""""""""""""""""""""""
+
+Due to performance reasons, monitoring of RBD images is disabled by default. For
+more information please see :ref:`prometheus-rbd-io-statistics`. If disabled,
+the overview and details dashboards will stay empty in Grafana and the metrics
+will not be visible in Prometheus.
+
+Configuring Dashboard
+"""""""""""""""""""""
 
 After you have set up Grafana and Prometheus, you will need to configure the
 connection information that the Ceph Dashboard will use to access Grafana.
@@ -649,6 +759,19 @@ in order to manage silences.
   The different behaviors of both methods are configured in a way that they
   should not disturb each other through annoying duplicated notifications
   popping up.
+
+If you are using a self-signed certificate in your Prometheus or your
+Alertmanager setup, you should disable certificate verification in the
+dashboard to avoid refused connections, e.g. caused by certificates signed by
+unknown CA or not matching the host name.
+
+- For Prometheus::
+
+  $ ceph dashboard set-prometheus-api-ssl-verify False
+
+- For Alertmanager::
+
+  $ ceph dashboard set-alertmanager-api-ssl-verify False
 
 .. _dashboard-user-role-management:
 
@@ -984,9 +1107,9 @@ the redirection behaviour on standby nodes.
     mode tcp
     option httpchk GET /
     http-check expect status 200
-    server x <HOST>:<PORT> check-ssl check verify none
-    server y <HOST>:<PORT> check-ssl check verify none
-    server z <HOST>:<PORT> check-ssl check verify none
+    server x <HOST>:<PORT> ssl check verify none
+    server y <HOST>:<PORT> ssl check verify none
+    server z <HOST>:<PORT> ssl check verify none
 
 .. _dashboard-auditing:
 
@@ -1061,6 +1184,13 @@ location is::
 After running the above command, Ceph Dashboard is able to find the NFS-Ganesha
 configuration objects and we can start manage the exports through the Web UI.
 
+.. note::
+
+    A separate pool for the NFS shares should be used. Otherwise it can cause the
+    `known issue <https://tracker.ceph.com/issues/46176>`_ with listing of shares
+    if the NFS objects are stored together with a lot of other objects in a single
+    pool.
+
 
 Support for Multiple NFS-Ganesha Clusters
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1084,6 +1214,16 @@ NFS-Ganesha cluster.
 
 When configuring the Ceph Dashboard with multiple NFS-Ganesha clusters, the
 Web UI will automatically allow to choose to which cluster an export belongs.
+
+
+Support for NFS-Ganesha Clusters Deployed by the Orchestrator
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Ceph Dashboard can be used to manage NFS-Ganesha clusters deployed by the
+Orchestrator. It can detect the clusters automatically. For more details
+on deploying NFS-Ganesha clusters with the Orchestrator, please see :ref:`orchestrator-cli-stateless-services`.
+Or particularly, see :ref:`deploy-cephadm-nfs-ganesha` for how to deploy
+NFS-Ganesha clusters with the Cephadm backend.
 
 
 Plug-ins
@@ -1230,7 +1370,7 @@ Ceph Dashboard Logs
 ^^^^^^^^^^^^^^^^^^^
 
 Dashboard Debug Flag
-''''''''''''''''''''
+""""""""""""""""""""
 
 With this flag enabled, traceback of errors are included in backend responses.
 
@@ -1244,7 +1384,7 @@ To enable it via the CLI, run the following command::
 
 
 Setting Logging Level of Dashboard Module
-'''''''''''''''''''''''''''''''''''''''''
+"""""""""""""""""""""""""""""""""""""""""
 
 Setting the logging level to debug makes the log more verbose and helpful for
 debugging.

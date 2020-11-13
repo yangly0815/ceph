@@ -4,10 +4,9 @@ from ceph.deployment.inventory import Device
 from ceph.deployment.service_spec import ServiceSpecValidationError, ServiceSpec, PlacementSpec
 
 try:
-    from typing import Optional, List, Dict, Any
+    from typing import Optional, List, Dict, Any, Union
 except ImportError:
     pass
-import six
 
 
 class DeviceSelection(object):
@@ -143,7 +142,7 @@ class DriveGroupSpec(ServiceSpec):
         "db_slots", "wal_slots", "block_db_size", "placement", "service_id", "service_type",
         "data_devices", "db_devices", "wal_devices", "journal_devices",
         "data_directories", "osds_per_device", "objectstore", "osd_id_claims",
-        "journal_size", "unmanaged"
+        "journal_size", "unmanaged", "filter_logic", "preview_only"
     ]
 
     def __init__(self,
@@ -160,16 +159,19 @@ class DriveGroupSpec(ServiceSpec):
                  db_slots=None,  # type: Optional[int]
                  wal_slots=None,  # type: Optional[int]
                  osd_id_claims=None,  # type: Optional[Dict[str, List[str]]]
-                 block_db_size=None,  # type: Optional[int]
-                 block_wal_size=None,  # type: Optional[int]
-                 journal_size=None,  # type: Optional[int]
+                 block_db_size=None,  # type: Union[int, str, None]
+                 block_wal_size=None,  # type: Union[int, str, None]
+                 journal_size=None,  # type: Union[int, str, None]
                  service_type=None,  # type: Optional[str]
                  unmanaged=False,  # type: bool
+                 filter_logic='AND',  # type: str
+                 preview_only=False,  # type: bool
                  ):
         assert service_type is None or service_type == 'osd'
         super(DriveGroupSpec, self).__init__('osd', service_id=service_id,
                                              placement=placement,
-                                             unmanaged=unmanaged)
+                                             unmanaged=unmanaged,
+                                             preview_only=preview_only)
 
         #: A :class:`ceph.deployment.drive_group.DeviceSelection`
         self.data_devices = data_devices
@@ -184,13 +186,13 @@ class DriveGroupSpec(ServiceSpec):
         self.journal_devices = journal_devices
 
         #: Set (or override) the "bluestore_block_wal_size" value, in bytes
-        self.block_wal_size = block_wal_size
+        self.block_wal_size: Union[int, str, None] = block_wal_size
 
         #: Set (or override) the "bluestore_block_db_size" value, in bytes
-        self.block_db_size = block_db_size
+        self.block_db_size: Union[int, str, None] = block_db_size
 
-        #: set journal_size is bytes
-        self.journal_size = journal_size
+        #: set journal_size in bytes
+        self.journal_size: Union[int, str, None] = journal_size
 
         #: Number of osd daemons per "DATA" device.
         #: To fully utilize nvme devices multiple osds are required.
@@ -214,6 +216,13 @@ class DriveGroupSpec(ServiceSpec):
         #: Optional: mapping of host -> List of osd_ids that should be replaced
         #: See :ref:`orchestrator-osd-replace`
         self.osd_id_claims = osd_id_claims or dict()
+
+        #: The logic gate we use to match disks with filters.
+        #: defaults to 'AND'
+        self.filter_logic = filter_logic.upper()
+
+        #: If this should be treated as a 'preview' spec
+        self.preview_only = preview_only
 
     @classmethod
     def _from_json_impl(cls, json_drive_group):
@@ -255,12 +264,6 @@ class DriveGroupSpec(ServiceSpec):
                 raise DriveGroupValidationError(
                     "Feature <{}> is not supported".format(applied_filter))
 
-        for key in ('block_wal_size', 'block_db_size', 'journal_size'):
-            if key in json_drive_group:
-                if isinstance(json_drive_group[key], six.string_types):
-                    from ceph.deployment.drive_selection import SizeMatcher
-                    json_drive_group[key] = SizeMatcher.str_to_byte(json_drive_group[key])
-
         try:
             args = {k: (DeviceSelection.from_json(v) if k.endswith('_devices') else v) for k, v in
                     json_drive_group.items()}
@@ -277,7 +280,7 @@ class DriveGroupSpec(ServiceSpec):
         if not self.service_id:
             raise DriveGroupValidationError('service_id is required')
 
-        if not isinstance(self.placement.host_pattern, six.string_types) and \
+        if not isinstance(self.placement.host_pattern, str) and \
                 self.placement.host_pattern is not None:
             raise DriveGroupValidationError('host_pattern must be of type string')
 
@@ -285,16 +288,24 @@ class DriveGroupSpec(ServiceSpec):
         for s in filter(None, specs):
             s.validate()
         for s in filter(None, [self.db_devices, self.wal_devices, self.journal_devices]):
+            if s.paths:
+                raise DriveGroupValidationError("`paths` is only allowed for data_devices")
             if s.all:
                 raise DriveGroupValidationError("`all` is only allowed for data_devices")
 
-        if self.objectstore not in ('filestore', 'bluestore'):
-            raise DriveGroupValidationError("objectstore not in ('filestore', 'bluestore')")
+        if self.objectstore not in ('bluestore'):
+            raise DriveGroupValidationError(f"{self.objectstore} is not supported. Must be "
+                                            f"one of ('bluestore')")
 
-        if self.block_wal_size is not None and type(self.block_wal_size) != int:
-            raise DriveGroupValidationError('block_wal_size must be of type int')
-        if self.block_db_size is not None and type(self.block_db_size) != int:
-            raise DriveGroupValidationError('block_db_size must be of type int')
+        if self.block_wal_size is not None and type(self.block_wal_size) not in [int, str]:
+            raise DriveGroupValidationError('block_wal_size must be of type int or string')
+        if self.block_db_size is not None and type(self.block_db_size) not in [int, str]:
+            raise DriveGroupValidationError('block_db_size must be of type int or string')
+        if self.journal_size is not None and type(self.journal_size) not in [int, str]:
+            raise DriveGroupValidationError('journal_size must be of type int or string')
+
+        if self.filter_logic not in ['AND', 'OR']:
+            raise DriveGroupValidationError('filter_logic must be either <AND> or <OR>')
 
     def __repr__(self):
         keys = [

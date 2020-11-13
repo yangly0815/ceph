@@ -7,14 +7,12 @@ import functools
 import itertools
 from subprocess import check_output, CalledProcessError
 
-from ceph.deployment.service_spec import NFSServiceSpec, ServiceSpec
+from ceph.deployment.service_spec import ServiceSpec, NFSServiceSpec, IscsiServiceSpec
 
 try:
     from typing import Callable, List, Sequence, Tuple
 except ImportError:
     pass  # type checking
-
-import six
 
 from ceph.deployment import inventory
 from ceph.deployment.drive_group import DriveGroupSpec
@@ -162,7 +160,7 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
     def _get_ceph_daemons(self):
         # type: () -> List[orchestrator.DaemonDescription]
         """ Return ceph daemons on the running host."""
-        types = ("mds", "osd", "mon", "rgw", "mgr", "nfs")
+        types = ("mds", "osd", "mon", "rgw", "mgr", "nfs", "iscsi")
         out = map(str, check_output(['ps', 'aux']).splitlines())
         processes = [p for p in out if any(
             [('ceph-{} '.format(t) in p) for t in types])]
@@ -315,7 +313,7 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
         pass
 
     @deferred_write("daemon_action")
-    def daemon_action(self, action, daemon_type, daemon_id):
+    def daemon_action(self, action, daemon_name, image=None):
         pass
 
     @deferred_write("Adding NFS service")
@@ -325,6 +323,16 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
 
     @deferred_write("apply_nfs")
     def apply_nfs(self, spec):
+        pass
+
+    @deferred_write("add_iscsi")
+    def add_iscsi(self, spec):
+        # type: (IscsiServiceSpec) -> None
+        pass
+
+    @deferred_write("apply_iscsi")
+    def apply_iscsi(self, spec):
+        # type: (IscsiServiceSpec) -> None
         pass
 
     @deferred_write("add_mds")
@@ -345,8 +353,10 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
     def add_host(self, spec):
         # type: (orchestrator.HostSpec) -> None
         host = spec.hostname
-        if host == 'raise_no_support':
+        if host == 'raise_validation_error':
             raise orchestrator.OrchestratorValidationError("MON count must be either 1, 3 or 5")
+        if host == 'raise_error':
+            raise orchestrator.OrchestratorError("host address is empty")
         if host == 'raise_bug':
             raise ZeroDivisionError()
         if host == 'raise_not_implemented':
@@ -355,11 +365,11 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
             raise orchestrator.NoOrchestrator()
         if host == 'raise_import_error':
             raise ImportError("test_orchestrator not enabled")
-        assert isinstance(host, six.string_types)
+        assert isinstance(host, str)
 
     @deferred_write("remove_host")
     def remove_host(self, host):
-        assert isinstance(host, six.string_types)
+        assert isinstance(host, str)
 
     @deferred_write("apply_mgr")
     def apply_mgr(self, spec):

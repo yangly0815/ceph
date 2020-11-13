@@ -7,7 +7,6 @@ import contextlib
 import json
 import logging
 import os
-import six
 import sys
 import tempfile
 import time
@@ -60,7 +59,7 @@ def cod_setup_remote_data(log, ctx, remote, NUM_OBJECTS, DATADIR,
         DATA = ""
         for _ in dataline:
             DATA += data
-        teuthology.write_file(remote, DDNAME, DATA)
+        remote.write_file(DDNAME, DATA)
 
 
 def cod_setup(log, ctx, remote, NUM_OBJECTS, DATADIR,
@@ -360,7 +359,7 @@ def test_objectstore(ctx, config, cli_remote, REP_POOL, REP_NAME, ec=False):
 
                             data = ("put-bytes going into {file}\n".
                                     format(file=file))
-                            teuthology.write_file(remote, SETNAME, data)
+                            remote.write_file(SETNAME, data)
                             cmd = ((prefix + "--pgid {pg}").
                                    format(id=osdid, pg=pg).split())
                             cmd.append(run.Raw("'{json}'".format(json=JSON)))
@@ -487,8 +486,8 @@ def test_objectstore(ctx, config, cli_remote, REP_POOL, REP_NAME, ec=False):
                                 log.error("failed with " +
                                           str(proc.exitstatus))
                                 log.error(" ".join([
-                                    six.ensure_str(proc.stdout.getvalue()),
-                                    six.ensure_str(proc.stderr.getvalue()),
+                                    proc.stdout.getvalue().decode(),
+                                    proc.stderr.getvalue().decode(),
                                     ]))
                                 ERRORS += 1
 

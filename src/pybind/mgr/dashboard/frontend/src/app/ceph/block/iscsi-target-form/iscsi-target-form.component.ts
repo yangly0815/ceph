@@ -3,22 +3,21 @@ import { FormArray, FormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
 import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { forkJoin } from 'rxjs';
 
-import { IscsiService } from '../../../shared/api/iscsi.service';
-import { RbdService } from '../../../shared/api/rbd.service';
-import { SelectMessages } from '../../../shared/components/select/select-messages.model';
-import { SelectOption } from '../../../shared/components/select/select-option.model';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdForm } from '../../../shared/forms/cd-form';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { ModalService } from '../../../shared/services/modal.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { IscsiService } from '~/app/shared/api/iscsi.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { SelectMessages } from '~/app/shared/components/select/select-messages.model';
+import { SelectOption } from '~/app/shared/components/select/select-option.model';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { IscsiTargetImageSettingsModalComponent } from '../iscsi-target-image-settings-modal/iscsi-target-image-settings-modal.component';
 import { IscsiTargetIqnSettingsModalComponent } from '../iscsi-target-iqn-settings-modal/iscsi-target-iqn-settings-modal.component';
 
@@ -57,30 +56,14 @@ export class IscsiTargetFormComponent extends CdForm implements OnInit {
 
   imagesSettings: any = {};
   messages = {
-    portals: new SelectMessages(
-      { noOptions: this.i18n('There are no portals available.') },
-      this.i18n
-    ),
-    images: new SelectMessages(
-      { noOptions: this.i18n('There are no images available.') },
-      this.i18n
-    ),
-    initiatorImage: new SelectMessages(
-      {
-        noOptions: this.i18n(
-          'There are no images available. Please make sure you add an image to the target.'
-        )
-      },
-      this.i18n
-    ),
-    groupInitiator: new SelectMessages(
-      {
-        noOptions: this.i18n(
-          'There are no initiators available. Please make sure you add an initiator to the target.'
-        )
-      },
-      this.i18n
-    )
+    portals: new SelectMessages({ noOptions: $localize`There are no portals available.` }),
+    images: new SelectMessages({ noOptions: $localize`There are no images available.` }),
+    initiatorImage: new SelectMessages({
+      noOptions: $localize`There are no images available. Please make sure you add an image to the target.`
+    }),
+    groupInitiator: new SelectMessages({
+      noOptions: $localize`There are no initiators available. Please make sure you add an initiator to the target.`
+    })
   };
 
   IQN_REGEX = /^iqn\.(19|20)\d\d-(0[1-9]|1[0-2])\.\D{2,3}(\.[A-Za-z0-9-]+)+(:[A-Za-z0-9-\.]+)*$/;
@@ -95,12 +78,11 @@ export class IscsiTargetFormComponent extends CdForm implements OnInit {
     private rbdService: RbdService,
     private router: Router,
     private route: ActivatedRoute,
-    private i18n: I18n,
     private taskWrapper: TaskWrapperService,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
-    this.resource = this.i18n('target');
+    this.resource = $localize`target`;
   }
 
   ngOnInit() {

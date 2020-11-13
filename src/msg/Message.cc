@@ -41,6 +41,7 @@
 #include "messages/MMonJoin.h"
 #include "messages/MMonElection.h"
 #include "messages/MMonSync.h"
+#include "messages/MMonPing.h"
 #include "messages/MMonScrub.h"
 
 #include "messages/MLog.h"
@@ -110,7 +111,6 @@
 #include "messages/MMonGetVersionReply.h"
 #include "messages/MMonHealth.h"
 #include "messages/MMonHealthChecks.h"
-#include "messages/MMonMetadata.h"
 #include "messages/MAuth.h"
 #include "messages/MAuthReply.h"
 #include "messages/MMonSubscribe.h"
@@ -130,7 +130,7 @@
 #include "messages/MClientQuota.h"
 #include "messages/MClientMetrics.h"
 
-#include "messages/MMDSSlaveRequest.h"
+#include "messages/MMDSPeerRequest.h"
 
 #include "messages/MMDSMap.h"
 #include "messages/MFSMap.h"
@@ -283,7 +283,7 @@ void Message::encode(uint64_t features, int crcflags, bool skip_header_crc)
       snprintf(fn, sizeof(fn), ENCODE_STRINGIFY(ENCODE_DUMP) "/%s__%d.%x",
 	       abi::__cxa_demangle(typeid(*this).name(), 0, 0, &status),
 	       getpid(), i++);
-      int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC, 0644);
+      int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC|O_BINARY, 0644);
       if (fd >= 0) {
 	bl.write_fd(fd);
 	::close(fd);
@@ -415,6 +415,9 @@ Message *decode_message(CephContext *cct,
   case MSG_MON_SYNC:
     m = make_message<MMonSync>();
     break;
+  case MSG_MON_PING:
+    m = make_message<MMonPing>();
+    break;
   case MSG_MON_SCRUB:
     m = make_message<MMonScrub>();
     break;
@@ -472,9 +475,6 @@ Message *decode_message(CephContext *cct,
     break;
   case CEPH_MSG_MON_GET_VERSION_REPLY:
     m = make_message<MMonGetVersionReply>();
-    break;
-  case CEPH_MSG_MON_METADATA:
-    m = make_message<MMonMetadata>();
     break;
 
   case MSG_OSD_BOOT:
@@ -694,8 +694,8 @@ Message *decode_message(CephContext *cct,
     break;
 
     // mds
-  case MSG_MDS_SLAVE_REQUEST:
-    m = make_message<MMDSSlaveRequest>();
+  case MSG_MDS_PEER_REQUEST:
+    m = make_message<MMDSPeerRequest>();
     break;
 
   case CEPH_MSG_MDS_MAP:

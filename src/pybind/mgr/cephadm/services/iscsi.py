@@ -5,29 +5,36 @@ from typing import List, cast
 from mgr_module import MonCommandFailed
 from ceph.deployment.service_spec import IscsiServiceSpec
 
-from orchestrator import DaemonDescription
-from .cephadmservice import CephadmService
+from orchestrator import DaemonDescription, OrchestratorError
+from .cephadmservice import CephadmDaemonSpec, CephService
 from .. import utils
 
 logger = logging.getLogger(__name__)
 
 
-class IscsiService(CephadmService):
+class IscsiService(CephService):
     TYPE = 'iscsi'
 
-    def config(self, spec: IscsiServiceSpec):
+    def config(self, spec: IscsiServiceSpec) -> None:
+        assert self.TYPE == spec.service_type
         self.mgr._check_pool_exists(spec.pool, spec.service_name())
 
         logger.info('Saving service %s spec with placement %s' % (
             spec.service_name(), spec.placement.pretty_str()))
         self.mgr.spec_store.save(spec)
 
-    def create(self, igw_id, host, spec) -> str:
+    def prepare_create(self, daemon_spec: CephadmDaemonSpec[IscsiServiceSpec]) -> CephadmDaemonSpec:
+        assert self.TYPE == daemon_spec.daemon_type
+        assert daemon_spec.spec
+
+        spec = daemon_spec.spec
+        igw_id = daemon_spec.daemon_id
+
         ret, keyring, err = self.mgr.check_mon_command({
             'prefix': 'auth get-or-create',
-            'entity': utils.name_to_auth_entity('iscsi', igw_id),
+            'entity': self.get_auth_entity(igw_id),
             'caps': ['mon', 'profile rbd, '
-                            'allow command "osd blacklist", '
+                            'allow command "osd blocklist", '
                             'allow command "config-key get" with "key" prefix "iscsi/"',
                      'osd', 'allow rwx'],
         })
@@ -37,7 +44,7 @@ class IscsiService(CephadmService):
                 cert_data = '\n'.join(spec.ssl_cert)
             else:
                 cert_data = spec.ssl_cert
-            ret, out, err = self.mgr.mon_command({
+            ret, out, err = self.mgr.check_mon_command({
                 'prefix': 'config-key set',
                 'key': f'iscsi/{utils.name_to_config_section("iscsi")}.{igw_id}/iscsi-gateway.crt',
                 'val': cert_data,
@@ -48,7 +55,7 @@ class IscsiService(CephadmService):
                 key_data = '\n'.join(spec.ssl_key)
             else:
                 key_data = spec.ssl_key
-            ret, out, err = self.mgr.mon_command({
+            ret, out, err = self.mgr.check_mon_command({
                 'prefix': 'config-key set',
                 'key': f'iscsi/{utils.name_to_config_section("iscsi")}.{igw_id}/iscsi-gateway.key',
                 'val': key_data,
@@ -59,11 +66,13 @@ class IscsiService(CephadmService):
             'spec': spec
         }
         igw_conf = self.mgr.template.render('services/iscsi/iscsi-gateway.cfg.j2', context)
-        extra_config = {'iscsi-gateway.cfg': igw_conf}
-        return self.mgr._create_daemon('iscsi', igw_id, host, keyring=keyring,
-                                       extra_config=extra_config)
 
-    def config_dashboard(self, daemon_descrs: List[DaemonDescription]):
+        daemon_spec.keyring = keyring
+        daemon_spec.extra_files = {'iscsi-gateway.cfg': igw_conf}
+
+        return daemon_spec
+
+    def config_dashboard(self, daemon_descrs: List[DaemonDescription]) -> None:
         def get_set_cmd_dicts(out: str) -> List[dict]:
             gateways = json.loads(out)['gateways']
             cmd_dicts = []

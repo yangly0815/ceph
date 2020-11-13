@@ -1,8 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { map } from 'rxjs/operators';
 
 import { CdDevice } from '../models/devices';
@@ -19,7 +18,7 @@ export class OsdService {
     KNOWN_PRIORITIES: [
       {
         name: null,
-        text: this.i18n('-- Select the priority --'),
+        text: $localize`-- Select the priority --`,
         values: {
           osd_max_backfills: null,
           osd_recovery_max_active: null,
@@ -29,7 +28,7 @@ export class OsdService {
       },
       {
         name: 'low',
-        text: this.i18n('Low'),
+        text: $localize`Low`,
         values: {
           osd_max_backfills: 1,
           osd_recovery_max_active: 1,
@@ -39,7 +38,7 @@ export class OsdService {
       },
       {
         name: 'default',
-        text: this.i18n('Default'),
+        text: $localize`Default`,
         values: {
           osd_max_backfills: 1,
           osd_recovery_max_active: 3,
@@ -49,7 +48,7 @@ export class OsdService {
       },
       {
         name: 'high',
-        text: this.i18n('High'),
+        text: $localize`High`,
         values: {
           osd_max_backfills: 4,
           osd_recovery_max_active: 4,
@@ -60,7 +59,7 @@ export class OsdService {
     ]
   };
 
-  constructor(private http: HttpClient, private i18n: I18n, private deviceService: DeviceService) {}
+  constructor(private http: HttpClient, private deviceService: DeviceService) {}
 
   create(driveGroups: Object[]) {
     const request = {
@@ -79,7 +78,6 @@ export class OsdService {
     interface OsdData {
       osd_map: { [key: string]: any };
       osd_metadata: { [key: string]: any };
-      histogram: { [key: string]: object };
       smart: { [device_identifier: string]: any };
     }
     return this.http.get<OsdData>(`${this.path}/${id}`);
@@ -104,16 +102,20 @@ export class OsdService {
     return this.http.put(`${this.path}/flags`, { flags: flags });
   }
 
+  updateIndividualFlags(flags: { [flag: string]: boolean }, ids: number[]) {
+    return this.http.put(`${this.path}/flags/individual`, { flags: flags, ids: ids });
+  }
+
   markOut(id: number) {
-    return this.http.post(`${this.path}/${id}/mark_out`, null);
+    return this.http.put(`${this.path}/${id}/mark`, { action: 'out' });
   }
 
   markIn(id: number) {
-    return this.http.post(`${this.path}/${id}/mark_in`, null);
+    return this.http.put(`${this.path}/${id}/mark`, { action: 'in' });
   }
 
   markDown(id: number) {
-    return this.http.post(`${this.path}/${id}/mark_down`, null);
+    return this.http.put(`${this.path}/${id}/mark`, { action: 'down' });
   }
 
   reweight(id: number, weight: number) {
@@ -125,7 +127,7 @@ export class OsdService {
   }
 
   markLost(id: number) {
-    return this.http.post(`${this.path}/${id}/mark_lost`, null);
+    return this.http.put(`${this.path}/${id}/mark`, { action: 'lost' });
   }
 
   purge(id: number) {

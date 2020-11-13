@@ -76,9 +76,9 @@ void Client::ms_handle_connect(crimson::net::ConnectionRef c)
   });
 }
 
-void Client::ms_handle_reset(crimson::net::ConnectionRef c, bool is_replace)
+void Client::ms_handle_reset(crimson::net::ConnectionRef c, bool /* is_replace */)
 {
-  gate.dispatch_in_background(__func__, *this, [this, c, is_replace] {
+  gate.dispatch_in_background(__func__, *this, [this, c] {
     if (conn == c) {
       report_timer.cancel();
       return reconnect();
@@ -103,7 +103,13 @@ seastar::future<> Client::reconnect()
   auto a_while = std::chrono::duration_cast<seastar::steady_clock_type::duration>(
     retry_interval);
   return seastar::sleep(a_while).then([this] {
-    auto peer = mgrmap.get_active_addrs().front();
+    auto peer = mgrmap.get_active_addrs().pick_addr(msgr.get_myaddr().get_type());
+    if (peer == entity_addr_t{}) {
+      // crimson msgr only uses the first bound addr
+      logger().error("mgr.{} does not have an addr compatible with me",
+                     mgrmap.get_active_name());
+      return;
+    }
     conn = msgr.connect(peer, CEPH_ENTITY_TYPE_MGR);
   });
 }

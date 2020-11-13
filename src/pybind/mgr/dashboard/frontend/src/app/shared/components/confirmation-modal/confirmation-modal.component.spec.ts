@@ -6,12 +6,8 @@ import { RouterTestingModule } from '@angular/router/testing';
 
 import { NgbActiveModal, NgbModalModule, NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
 
-import {
-  configureTestBed,
-  FixtureHelper,
-  i18nProviders
-} from '../../../../testing/unit-test-helper';
-import { ModalService } from '../../services/modal.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { configureTestBed, FixtureHelper } from '~/testing/unit-test-helper';
 import { BackButtonComponent } from '../back-button/back-button.component';
 import { ModalComponent } from '../modal/modal.component';
 import { SubmitButtonComponent } from '../submit-button/submit-button.component';
@@ -21,11 +17,7 @@ import { ConfirmationModalComponent } from './confirmation-modal.component';
 export class MockModule {}
 
 @Component({
-  template: `
-    <ng-template #fillTpl>
-      Template based description.
-    </ng-template>
-  `
+  template: `<ng-template #fillTpl>Template based description.</ng-template>`
 })
 class MockComponent {
   @ViewChild('fillTpl', { static: true })
@@ -84,7 +76,7 @@ describe('ConfirmationModalComponent', () => {
     ],
     schemas: [NO_ERRORS_SCHEMA],
     imports: [ReactiveFormsModule, MockModule, RouterTestingModule, NgbModalModule],
-    providers: [NgbActiveModal, i18nProviders, SubmitButtonComponent]
+    providers: [NgbActiveModal, SubmitButtonComponent]
   });
 
   beforeEach(() => {
@@ -188,7 +180,7 @@ describe('ConfirmationModalComponent', () => {
 
     it('should show the description', () => {
       expect(fh.getText('.modal-body')).toBe(
-        'Template based description.  String based description.'
+        'Template based description. String based description.'
       );
     });
   });

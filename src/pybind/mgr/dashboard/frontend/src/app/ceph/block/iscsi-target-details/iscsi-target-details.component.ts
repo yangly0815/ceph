@@ -1,20 +1,19 @@
 import { Component, Input, OnChanges, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
 import {
   ITreeOptions,
   TreeComponent,
   TreeModel,
   TreeNode,
   TREE_ACTIONS
-} from 'angular-tree-component';
-import * as _ from 'lodash';
+} from '@circlon/angular-tree-component';
+import _ from 'lodash';
 
-import { TableComponent } from '../../../shared/datatable/table/table.component';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { BooleanTextPipe } from '../../../shared/pipes/boolean-text.pipe';
-import { IscsiBackstorePipe } from '../../../shared/pipes/iscsi-backstore.pipe';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { BooleanTextPipe } from '~/app/shared/pipes/boolean-text.pipe';
+import { IscsiBackstorePipe } from '~/app/shared/pipes/iscsi-backstore.pipe';
 
 @Component({
   selector: 'cd-iscsi-target-details',
@@ -61,7 +60,6 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
   };
 
   constructor(
-    private i18n: I18n,
     private iscsiBackstorePipe: IscsiBackstorePipe,
     private booleanTextPipe: BooleanTextPipe
   ) {}
@@ -70,19 +68,19 @@ export class IscsiTargetDetailsComponent implements OnChanges, OnInit {
     this.columns = [
       {
         prop: 'displayName',
-        name: this.i18n('Name'),
+        name: $localize`Name`,
         flexGrow: 1,
         cellTemplate: this.highlightTpl
       },
       {
         prop: 'current',
-        name: this.i18n('Current'),
+        name: $localize`Current`,
         flexGrow: 1,
         cellTemplate: this.highlightTpl
       },
       {
         prop: 'default',
-        name: this.i18n('Default'),
+        name: $localize`Default`,
         flexGrow: 1,
         cellTemplate: this.highlightTpl
       }

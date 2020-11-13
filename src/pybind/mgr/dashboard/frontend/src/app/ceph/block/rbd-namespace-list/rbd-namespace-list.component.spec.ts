@@ -6,9 +6,9 @@ import { RouterTestingModule } from '@angular/router/testing';
 import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { SharedModule } from '../../../shared/shared.module';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { RbdTabsComponent } from '../rbd-tabs/rbd-tabs.component';
 import { RbdNamespaceListComponent } from './rbd-namespace-list.component';
 
@@ -26,7 +26,7 @@ describe('RbdNamespaceListComponent', () => {
       ToastrModule.forRoot(),
       NgbNavModule
     ],
-    providers: [TaskListService, i18nProviders]
+    providers: [TaskListService]
   });
 
   beforeEach(() => {

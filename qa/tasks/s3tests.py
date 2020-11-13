@@ -8,7 +8,6 @@ import contextlib
 import logging
 import os
 import random
-import six
 import string
 
 from teuthology import misc as teuthology
@@ -82,11 +81,11 @@ def _config_user(s3tests_conf, section, user):
     s3tests_conf[section].setdefault('access_key',
         ''.join(random.choice(string.ascii_uppercase) for i in range(20)))
     s3tests_conf[section].setdefault('secret_key',
-        six.ensure_str(base64.b64encode(os.urandom(40))))
+        base64.b64encode(os.urandom(40)).decode())
     s3tests_conf[section].setdefault('totp_serial',
         ''.join(random.choice(string.digits) for i in range(10)))
     s3tests_conf[section].setdefault('totp_seed',
-        six.ensure_str(base64.b32encode(os.urandom(40))))
+        base64.b32encode(os.urandom(40)).decode())
     s3tests_conf[section].setdefault('totp_seconds', '5')
 
 
@@ -98,7 +97,7 @@ def create_users(ctx, config):
     assert isinstance(config, dict)
     log.info('Creating rgw users...')
     testdir = teuthology.get_testdir(ctx)
-    users = {'s3 main': 'foo', 's3 alt': 'bar', 's3 tenant': 'testx$tenanteduser'}
+    users = {'s3 main': 'foo', 's3 alt': 'bar', 's3 tenant': 'testx$tenanteduser', 'iam': 'foobar'}
     for client in config['clients']:
         s3tests_conf = config['s3tests_conf'][client]
         s3tests_conf.setdefault('fixtures', {})
@@ -108,40 +107,83 @@ def create_users(ctx, config):
             log.debug('Creating user {user} on {host}'.format(user=s3tests_conf[section]['user_id'], host=client))
             cluster_name, daemon_type, client_id = teuthology.split_role(client)
             client_with_id = daemon_type + '.' + client_id
-            ctx.cluster.only(client).run(
-                args=[
-                    'adjust-ulimits',
-                    'ceph-coverage',
-                    '{tdir}/archive/coverage'.format(tdir=testdir),
-                    'radosgw-admin',
-                    '-n', client_with_id,
-                    'user', 'create',
-                    '--uid', s3tests_conf[section]['user_id'],
-                    '--display-name', s3tests_conf[section]['display_name'],
-                    '--access-key', s3tests_conf[section]['access_key'],
-                    '--secret', s3tests_conf[section]['secret_key'],
-                    '--email', s3tests_conf[section]['email'],
-                    '--caps', 'user-policy=*',
-                    '--cluster', cluster_name,
-                ],
-            )
-            ctx.cluster.only(client).run(
-                args=[
-                    'adjust-ulimits',
-                    'ceph-coverage',
-                    '{tdir}/archive/coverage'.format(tdir=testdir),
-                    'radosgw-admin',
-                    '-n', client_with_id,
-                    'mfa', 'create',
-                    '--uid', s3tests_conf[section]['user_id'],
-                    '--totp-serial', s3tests_conf[section]['totp_serial'],
-                    '--totp-seed', s3tests_conf[section]['totp_seed'],
-                    '--totp-seconds', s3tests_conf[section]['totp_seconds'],
-                    '--totp-window', '8',
-                    '--totp-seed-type', 'base32',
-                    '--cluster', cluster_name,
-                ],
-            )
+            if section=='iam':
+                ctx.cluster.only(client).run(
+                    args=[
+                        'adjust-ulimits',
+                        'ceph-coverage',
+                        '{tdir}/archive/coverage'.format(tdir=testdir),
+                        'radosgw-admin',
+                        '-n', client_with_id,
+                        'user', 'create',
+                        '--uid', s3tests_conf[section]['user_id'],
+                        '--display-name', s3tests_conf[section]['display_name'],
+                        '--access-key', s3tests_conf[section]['access_key'],
+                        '--secret', s3tests_conf[section]['secret_key'],
+                        '--cluster', cluster_name,
+                    ],
+                )
+                ctx.cluster.only(client).run(
+                    args=[
+                        'adjust-ulimits',
+                        'ceph-coverage',
+                        '{tdir}/archive/coverage'.format(tdir=testdir),
+                        'radosgw-admin',
+                        '-n', client_with_id,
+                        'caps', 'add',
+                        '--uid', s3tests_conf[section]['user_id'],
+                        '--caps', 'user-policy=*',
+                        '--cluster', cluster_name,
+                    ],
+                )
+                ctx.cluster.only(client).run(
+                    args=[
+                        'adjust-ulimits',
+                        'ceph-coverage',
+                        '{tdir}/archive/coverage'.format(tdir=testdir),
+                        'radosgw-admin',
+                        '-n', client_with_id,
+                        'caps', 'add',
+                        '--uid', s3tests_conf[section]['user_id'],
+                        '--caps', 'roles=*',
+                        '--cluster', cluster_name,
+                    ],
+                )
+            else: 
+                ctx.cluster.only(client).run(
+                    args=[
+                        'adjust-ulimits',
+                        'ceph-coverage',
+                        '{tdir}/archive/coverage'.format(tdir=testdir),
+                        'radosgw-admin',
+                        '-n', client_with_id,
+                        'user', 'create',
+                        '--uid', s3tests_conf[section]['user_id'],
+                        '--display-name', s3tests_conf[section]['display_name'],
+                        '--access-key', s3tests_conf[section]['access_key'],
+                        '--secret', s3tests_conf[section]['secret_key'],
+                        '--email', s3tests_conf[section]['email'],
+                        '--caps', 'user-policy=*',
+                        '--cluster', cluster_name,
+                    ],
+                )
+                ctx.cluster.only(client).run(
+                    args=[
+                        'adjust-ulimits',
+                        'ceph-coverage',
+                        '{tdir}/archive/coverage'.format(tdir=testdir),
+                        'radosgw-admin',
+                        '-n', client_with_id,
+                        'mfa', 'create',
+                        '--uid', s3tests_conf[section]['user_id'],
+                        '--totp-serial', s3tests_conf[section]['totp_serial'],
+                        '--totp-seed', s3tests_conf[section]['totp_seed'],
+                        '--totp-seconds', s3tests_conf[section]['totp_seconds'],
+                        '--totp-window', '8',
+                        '--totp-seed-type', 'base32',
+                        '--cluster', cluster_name,
+                    ],
+                )
     try:
         yield
     finally:
@@ -236,8 +278,7 @@ def configure(ctx, config):
             )
         conf_fp = BytesIO()
         s3tests_conf.write(conf_fp)
-        teuthology.write_file(
-            remote=remote,
+        remote.write_file(
             path='{tdir}/archive/s3-tests.{client}.conf'.format(tdir=testdir, client=client),
             data=conf_fp.getvalue(),
             )
@@ -245,16 +286,12 @@ def configure(ctx, config):
     log.info('Configuring boto...')
     boto_src = os.path.join(os.path.dirname(__file__), 'boto.cfg.template')
     for client, properties in config['clients'].items():
-        with open(boto_src, 'rb') as f:
+        with open(boto_src) as f:
             (remote,) = ctx.cluster.only(client).remotes.keys()
-            conf = six.ensure_str(f.read()).format(
+            conf = f.read().format(
                 idle_timeout=config.get('idle_timeout', 30)
                 )
-            teuthology.write_file(
-                remote=remote,
-                path='{tdir}/boto.cfg'.format(tdir=testdir),
-                data=six.ensure_binary(conf),
-                )
+            remote.write_file('{tdir}/boto.cfg'.format(tdir=testdir), conf)
 
     try:
         yield
@@ -295,9 +332,13 @@ def run_tests(ctx, config):
         else:
             args += ['REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt']
         # civetweb > 1.8 && beast parsers are strict on rfc2616
-        attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616"]
+        attrs = ["!fails_on_rgw", "!lifecycle_expiration", "!fails_strict_rfc2616","!s3select","!sts_test"]
         if client_config.get('calling-format') != 'ordinary':
             attrs += ['!fails_with_subdomain']
+       
+        if 'extra_attrs' in client_config:
+            attrs = client_config.get('extra_attrs')
+
         args += [
             '{tdir}/s3-tests/virtualenv/bin/python'.format(tdir=testdir),
             '-m', 'nose',
@@ -438,6 +479,7 @@ def task(ctx, config):
                 's3 main'  : {},
                 's3 alt'   : {},
 		's3 tenant': {},
+                'iam'      : {},
                 }
             )
 

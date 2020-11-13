@@ -18,8 +18,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include <thread>
+#ifndef _WIN32
 #include <sys/mount.h>
+#else
+#include <stdlib.h>
+#endif
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -63,9 +69,13 @@ int manual_fallocate(int fd, off_t offset, off_t len) {
 }
 
 int on_zfs(int basedir_fd) {
+  #ifndef _WIN32
   struct statfs basefs;
   (void)fstatfs(basedir_fd, &basefs);
   return (basefs.f_type == FS_ZFS_TYPE);
+  #else
+  return 0;
+  #endif
 }
 
 int ceph_posix_fallocate(int fd, off_t offset, off_t len) {
@@ -102,6 +112,7 @@ int pipe_cloexec(int pipefd[2], int flags)
   if (pipe(pipefd) == -1)
     return -1;
 
+  #ifndef _WIN32
   /*
    * The old-fashioned, race-condition prone way that we have to fall
    * back on if pipe2 does not exist.
@@ -113,6 +124,7 @@ int pipe_cloexec(int pipefd[2], int flags)
   if (fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) < 0) {
     goto fail;
   }
+  #endif
 
   return 0;
 fail:
@@ -133,8 +145,10 @@ int socket_cloexec(int domain, int type, int protocol)
   if (fd == -1)
     return -1;
 
+  #ifndef _WIN32
   if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
     goto fail;
+  #endif
 
   return fd;
 fail:
@@ -156,11 +170,13 @@ int socketpair_cloexec(int domain, int type, int protocol, int sv[2])
   if (rc == -1)
     return -1;
 
+  #ifndef _WIN32
   if (fcntl(sv[0], F_SETFD, FD_CLOEXEC) < 0)
     goto fail;
 
   if (fcntl(sv[1], F_SETFD, FD_CLOEXEC) < 0)
     goto fail;
+  #endif
 
   return 0;
 fail:
@@ -180,8 +196,10 @@ int accept_cloexec(int sockfd, struct sockaddr* addr, socklen_t* addrlen)
   if (fd == -1)
     return -1;
 
+  #ifndef _WIN32
   if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
     goto fail;
+  #endif
 
   return fd;
 fail:
@@ -201,7 +219,10 @@ int sched_setaffinity(pid_t pid, size_t cpusetsize,
 
 char *ceph_strerror_r(int errnum, char *buf, size_t buflen)
 {
-#ifdef STRERROR_R_CHAR_P
+#ifdef _WIN32
+  strerror_s(buf, buflen, errnum);
+  return buf;
+#elif defined(STRERROR_R_CHAR_P)
   return strerror_r(errnum, buf, buflen);
 #else
   if (strerror_r(errnum, buf, buflen)) {
@@ -211,7 +232,21 @@ char *ceph_strerror_r(int errnum, char *buf, size_t buflen)
 #endif
 }
 
+int ceph_memzero_s(void *dest, size_t destsz, size_t count) {
+#ifdef __STDC_LIB_EXT1__
+    return memset_s(dest, destsz, 0, count);
+#elif defined(_WIN32)
+    SecureZeroMemory(dest, count);
+#else
+    explicit_bzero(dest, count);
+#endif
+    return 0;
+}
+
 #ifdef _WIN32
+
+#include <iomanip>
+#include <ctime>
 
 // chown is not available on Windows. Plus, changing file owners is not
 // a common practice on Windows.
@@ -225,6 +260,237 @@ int fchown(int fd, uid_t owner, gid_t group) {
 
 int lchown(const char *path, uid_t owner, gid_t group) {
   return 0;
+}
+
+int posix_memalign(void **memptr, size_t alignment, size_t size) {
+  *memptr = _aligned_malloc(size, alignment);
+  return *memptr ? 0 : errno;
+}
+
+char *strptime(const char *s, const char *format, struct tm *tm) {
+  std::istringstream input(s);
+  input.imbue(std::locale(setlocale(LC_ALL, nullptr)));
+  input >> std::get_time(tm, format);
+  if (input.fail()) {
+    return nullptr;
+  }
+  return (char*)(s + input.tellg());
+}
+
+int pipe(int pipefd[2]) {
+  // We'll use the same pipe size as Linux (64kb).
+  return _pipe(pipefd, 0x10000, O_NOINHERIT);
+}
+
+// lrand48 is not available on Windows. We'll generate a pseudo-random
+// value in the 0 - 2^31 range by calling rand twice.
+long int lrand48(void) {
+  long int val;
+  val = (long int) rand();
+  val <<= 16;
+  val += (long int) rand();
+  return val;
+}
+
+int random() {
+  return rand();
+}
+
+int fsync(int fd) {
+  HANDLE handle = (HANDLE*)_get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE)
+    return -1;
+  if (!FlushFileBuffers(handle))
+    return -1;
+  return 0;
+}
+
+ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset) {
+  DWORD bytes_written = 0;
+
+  HANDLE handle = (HANDLE*)_get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE)
+    return -1;
+
+  OVERLAPPED overlapped = { 0 };
+  ULARGE_INTEGER offsetUnion;
+  offsetUnion.QuadPart = offset;
+
+  overlapped.Offset = offsetUnion.LowPart;
+  overlapped.OffsetHigh = offsetUnion.HighPart;
+
+  if (!WriteFile(handle, buf, count, &bytes_written, &overlapped))
+    // we may consider mapping error codes, although that may
+    // not be exhaustive.
+    return -1;
+
+  return bytes_written;
+}
+
+ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
+  DWORD bytes_read = 0;
+
+  HANDLE handle = (HANDLE*)_get_osfhandle(fd);
+  if (handle == INVALID_HANDLE_VALUE)
+    return -1;
+
+  OVERLAPPED overlapped = { 0 };
+  ULARGE_INTEGER offsetUnion;
+  offsetUnion.QuadPart = offset;
+
+  overlapped.Offset = offsetUnion.LowPart;
+  overlapped.OffsetHigh = offsetUnion.HighPart;
+
+  if (!ReadFile(handle, buf, count, &bytes_read, &overlapped)) {
+    if (GetLastError() != ERROR_HANDLE_EOF)
+      return -1;
+  }
+
+  return bytes_read;
+}
+
+ssize_t preadv(int fd, const struct iovec *iov, int iov_cnt) {
+  ssize_t read = 0;
+
+  for (int i = 0; i < iov_cnt; i++) {
+    int r = ::read(fd, iov[i].iov_base, iov[i].iov_len);
+    if (r < 0)
+      return r;
+    read += r;
+    if (r < iov[i].iov_len)
+      break;
+  }
+
+  return read;
+}
+
+ssize_t writev(int fd, const struct iovec *iov, int iov_cnt) {
+  ssize_t written = 0;
+
+  for (int i = 0; i < iov_cnt; i++) {
+    int r = ::write(fd, iov[i].iov_base, iov[i].iov_len);
+    if (r < 0)
+      return r;
+    written += r;
+    if (r < iov[i].iov_len)
+      break;
+  }
+
+  return written;
+}
+
+int &alloc_tls() {
+  static __thread int tlsvar;
+  tlsvar++;
+  return tlsvar;
+}
+
+void apply_tls_workaround() {
+  // Workaround for the following Mingw bugs:
+  // https://sourceforge.net/p/mingw-w64/bugs/727/
+  // https://sourceforge.net/p/mingw-w64/bugs/527/
+  // https://sourceforge.net/p/mingw-w64/bugs/445/
+  // https://gcc.gnu.org/bugzilla/attachment.cgi?id=41382
+  pthread_key_t key;
+  pthread_key_create(&key, nullptr);
+  // Use a TLS slot for emutls
+  alloc_tls();
+  // Free up a slot that can now be used for c++ destructors
+  pthread_key_delete(key);
+}
+
+CEPH_CONSTRUCTOR(ceph_windows_init) {
+  // This will run at startup time before invoking main().
+  WSADATA wsaData;
+  int error;
+
+  #ifdef __MINGW32__
+  apply_tls_workaround();
+  #endif
+
+  error = WSAStartup(MAKEWORD(2, 2), &wsaData);
+  if (error != 0) {
+    fprintf(stderr, "WSAStartup failed: %d", WSAGetLastError());
+    exit(error);
+  }
+}
+
+int win_socketpair(int socks[2])
+{
+    union {
+       struct sockaddr_in inaddr;
+       struct sockaddr addr;
+    } a;
+    int listener;
+    int e;
+    socklen_t addrlen = sizeof(a.inaddr);
+    int reuse = 1;
+
+    if (socks == 0) {
+      errno = -EINVAL;
+      return SOCKET_ERROR;
+    }
+
+    listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener == INVALID_SOCKET)
+        return SOCKET_ERROR;
+
+    memset(&a, 0, sizeof(a));
+    a.inaddr.sin_family = AF_INET;
+    a.inaddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.inaddr.sin_port = 0;
+
+    socks[0] = socks[1] = INVALID_SOCKET;
+    do {
+        if (setsockopt(listener, SOL_SOCKET, SO_REUSEADDR,
+               (char*) &reuse, (socklen_t) sizeof(reuse)) == -1)
+            break;
+        if  (bind(listener, &a.addr, sizeof(a.inaddr)) == SOCKET_ERROR)
+            break;
+        if  (getsockname(listener, &a.addr, &addrlen) == SOCKET_ERROR)
+            break;
+        if (listen(listener, 1) == SOCKET_ERROR)
+            break;
+        socks[0] = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (socks[0] == INVALID_SOCKET)
+            break;
+        if (connect(socks[0], &a.addr, sizeof(a.inaddr)) == SOCKET_ERROR)
+            break;
+        socks[1] = accept(listener, NULL, NULL);
+        if (socks[1] == INVALID_SOCKET)
+            break;
+
+        closesocket(listener);
+
+        return 0;
+
+    } while (0);
+
+    e = errno;
+    closesocket(listener);
+    closesocket(socks[0]);
+    closesocket(socks[1]);
+    errno = e;
+    return SOCKET_ERROR;
+}
+
+unsigned get_page_size() {
+  SYSTEM_INFO system_info;
+  GetSystemInfo(&system_info);
+  return system_info.dwPageSize;
+}
+
+int setenv(const char *name, const char *value, int overwrite) {
+  if (!overwrite && getenv(name)) {
+    return 0;
+  }
+  return _putenv_s(name, value);
+}
+
+#else
+
+unsigned get_page_size() {
+  return sysconf(_SC_PAGESIZE);
 }
 
 #endif /* _WIN32 */

@@ -243,8 +243,9 @@ set_target_properties(cls_lua PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_lua DESTINATION ${cls_dir})
 target_link_libraries(cls_lua
-    liblua
+    ${LUA_LIBRARIES}
     json_spirit)
+target_include_directories(cls_lua PRIVATE "${LUA_INCLUDE_DIR}")
 
 set(cls_lua_client_srcs
     lua/cls_lua_client.cc)
@@ -269,6 +270,7 @@ set_target_properties(cls_cas PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_cas DESTINATION ${cls_dir})
+
 
 
 #cls_queue
@@ -307,6 +309,7 @@ if (WITH_RADOSGW)
   add_library(cls_rgw_gc_client STATIC ${cls_rgw_gc_client_srcs})
 endif (WITH_RADOSGW)
 
+
 #cls_2pc_queue
 set(cls_2pc_queue_srcs
   2pc_queue/cls_2pc_queue.cc
@@ -319,9 +322,19 @@ set_target_properties(cls_2pc_queue PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_2pc_queue DESTINATION ${cls_dir})
-
 set(cls_2pc_queue_client_srcs
   2pc_queue/cls_2pc_queue_client.cc)
 add_library(cls_2pc_queue_client STATIC ${cls_2pc_queue_client_srcs})
 
+
 add_subdirectory(cmpomap)
+
+# cls_fifo
+set(cls_fifo_srcs fifo/cls_fifo.cc)
+add_library(cls_fifo SHARED ${cls_fifo_srcs})
+set_target_properties(cls_fifo PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_fifo DESTINATION ${cls_dir})

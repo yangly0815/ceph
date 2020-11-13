@@ -80,17 +80,52 @@ public:
     return update_refcount(t, addr, 1);
   }
 
-  submit_lba_transaction_ret submit_lba_transaction(
+  complete_transaction_ret complete_transaction(
     Transaction &t) final;
 
-  TransactionRef create_transaction() final {
-    auto t = new Transaction;
-    return TransactionRef(t);
+  init_cached_extent_ret init_cached_extent(
+    Transaction &t,
+    CachedExtentRef e) final;
+
+  scan_mappings_ret scan_mappings(
+    Transaction &t,
+    laddr_t begin,
+    laddr_t end,
+    scan_mappings_func_t &&f) final;
+
+  scan_mapped_space_ret scan_mapped_space(
+    Transaction &t,
+    scan_mapped_space_func_t &&f) final;
+
+  rewrite_extent_ret rewrite_extent(
+    Transaction &t,
+    CachedExtentRef extent);
+
+  get_physical_extent_if_live_ret get_physical_extent_if_live(
+    Transaction &t,
+    extent_types_t type,
+    paddr_t addr,
+    laddr_t laddr,
+    segment_off_t len) final;
+
+  void add_pin(LBAPin &pin) final {
+    auto *bpin = reinterpret_cast<BtreeLBAPin*>(&pin);
+    pin_set.add_pin(bpin->pin);
+    bpin->parent = nullptr;
   }
 
 private:
   SegmentManager &segment_manager;
   Cache &cache;
+
+  btree_pin_set_t pin_set;
+
+  op_context_t get_context(Transaction &t) {
+    return op_context_t{cache, pin_set, t};
+  }
+
+  static btree_range_pin_t &get_pin(CachedExtent &e);
+
 
   /**
    * get_root
@@ -133,12 +168,20 @@ private:
    * Updates mapping, removes if f returns nullopt
    */
   using update_mapping_ertr = ref_ertr;
-  using update_mapping_ret = ref_ertr::future<std::optional<lba_map_val_t>>;
+  using update_mapping_ret = ref_ertr::future<lba_map_val_t>;
   using update_func_t = LBANode::mutate_func_t;
   update_mapping_ret update_mapping(
     Transaction &t,
     laddr_t addr,
     update_func_t &&f);
+
+  using update_internal_mapping_ertr = LBANode::mutate_internal_address_ertr;
+  using update_internal_mapping_ret = LBANode::mutate_internal_address_ret;
+  update_internal_mapping_ret update_internal_mapping(
+    Transaction &t,
+    depth_t depth,
+    laddr_t laddr,
+    paddr_t paddr);
 };
 using BtreeLBAManagerRef = std::unique_ptr<BtreeLBAManager>;
 

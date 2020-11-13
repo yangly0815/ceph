@@ -1,31 +1,30 @@
 import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
 
-import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { ConfigurationService } from '../../../shared/api/configuration.service';
-import { PoolService } from '../../../shared/api/pool.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { TableComponent } from '../../../shared/datatable/table/table.component';
-import { CellTemplate } from '../../../shared/enum/cell-template.enum';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { ExecutingTask } from '../../../shared/models/executing-task';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { Permissions } from '../../../shared/models/permissions';
-import { DimlessPipe } from '../../../shared/pipes/dimless.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
-import { URLBuilderService } from '../../../shared/services/url-builder.service';
-import { PgCategoryService } from '../../shared/pg-category.service';
+import { PgCategoryService } from '~/app/ceph/shared/pg-category.service';
+import { ConfigurationService } from '~/app/shared/api/configuration.service';
+import { PoolService } from '~/app/shared/api/pool.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { TableStatusViewCache } from '~/app/shared/classes/table-status-view-cache';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { ViewCacheStatus } from '~/app/shared/enum/view-cache-status.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { Permissions } from '~/app/shared/models/permissions';
+import { DimlessPipe } from '~/app/shared/pipes/dimless.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { URLBuilderService } from '~/app/shared/services/url-builder.service';
 import { Pool } from '../pool';
 import { PoolStat, PoolStats } from '../pool-stat';
 
@@ -41,7 +40,7 @@ const BASE_URL = 'pool';
   styleUrls: ['./pool-list.component.scss']
 })
 export class PoolListComponent extends ListWithDetails implements OnInit {
-  @ViewChild(TableComponent, { static: true })
+  @ViewChild(TableComponent)
   table: TableComponent;
   @ViewChild('poolUsageTpl', { static: true })
   poolUsageTpl: TemplateRef<any>;
@@ -52,11 +51,10 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
   pools: Pool[];
   columns: CdTableColumn[];
   selection = new CdTableSelection();
-  modalRef: NgbModalRef;
   executingTasks: ExecutingTask[] = [];
   permissions: Permissions;
   tableActions: CdTableAction[];
-  viewCacheStatusList: any[];
+  tableStatus = new TableStatusViewCache();
   cacheTiers: any[] = [];
   monAllowPoolDelete = false;
 
@@ -64,9 +62,8 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
     private poolService: PoolService,
     private taskWrapper: TaskWrapperService,
     private authStorageService: AuthStorageService,
-    private taskListService: TaskListService,
+    public taskListService: TaskListService,
     private modalService: ModalService,
-    private i18n: I18n,
     private pgCategoryService: PgCategoryService,
     private dimlessPipe: DimlessPipe,
     private urlBuilder: URLBuilderService,
@@ -94,8 +91,7 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
         icon: Icons.destroy,
         click: () => this.deletePoolModal(),
         name: this.actionLabels.DELETE,
-        disable: () => !this.selection.first() || !this.monAllowPoolDelete,
-        disableDesc: () => this.getDisableDesc()
+        disable: this.getDisableDesc.bind(this)
       }
     ];
 
@@ -119,23 +115,23 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
     this.columns = [
       {
         prop: 'pool_name',
-        name: this.i18n('Name'),
+        name: $localize`Name`,
         flexGrow: 4,
         cellTransformation: CellTemplate.executing
       },
       {
         prop: 'type',
-        name: this.i18n('Type'),
+        name: $localize`Type`,
         flexGrow: 2
       },
       {
         prop: 'application_metadata',
-        name: this.i18n('Applications'),
+        name: $localize`Applications`,
         flexGrow: 3
       },
       {
         prop: 'pg_status',
-        name: this.i18n('PG Status'),
+        name: $localize`PG Status`,
         flexGrow: 3,
         cellClass: ({ row, column, value }): any => {
           return this.getPgStatusCellClass(row, column, value);
@@ -143,35 +139,29 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
       },
       {
         prop: 'size',
-        name: this.i18n('Replica Size'),
-        flexGrow: 2,
-        cellClass: 'text-right'
-      },
-      {
-        prop: 'last_change',
-        name: this.i18n('Last Change'),
+        name: $localize`Replica Size`,
         flexGrow: 2,
         cellClass: 'text-right'
       },
       {
         prop: 'erasure_code_profile',
-        name: this.i18n('Erasure Coded Profile'),
+        name: $localize`Erasure Coded Profile`,
         flexGrow: 2
       },
       {
         prop: 'crush_rule',
-        name: this.i18n('Crush Ruleset'),
+        name: $localize`Crush Ruleset`,
         flexGrow: 3
       },
       {
-        name: this.i18n('Usage'),
+        name: $localize`Usage`,
         prop: 'usage',
         cellTemplate: this.poolUsageTpl,
         flexGrow: 3
       },
       {
         prop: 'stats.rd_bytes.rates',
-        name: this.i18n('Read bytes'),
+        name: $localize`Read bytes`,
         comparator: (_valueA: any, _valueB: any, rowA: Pool, rowB: Pool) =>
           compare('stats.rd_bytes.latest', rowA, rowB),
         cellTransformation: CellTemplate.sparkline,
@@ -179,7 +169,7 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
       },
       {
         prop: 'stats.wr_bytes.rates',
-        name: this.i18n('Write bytes'),
+        name: $localize`Write bytes`,
         comparator: (_valueA: any, _valueB: any, rowA: Pool, rowB: Pool) =>
           compare('stats.wr_bytes.latest', rowA, rowB),
         cellTransformation: CellTemplate.sparkline,
@@ -187,14 +177,14 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
       },
       {
         prop: 'stats.rd.rate',
-        name: this.i18n('Read ops'),
+        name: $localize`Read ops`,
         flexGrow: 1,
         pipe: this.dimlessPipe,
         cellTransformation: CellTemplate.perSecond
       },
       {
         prop: 'stats.wr.rate',
-        name: this.i18n('Write ops'),
+        name: $localize`Write ops`,
         flexGrow: 1,
         pipe: this.dimlessPipe,
         cellTransformation: CellTemplate.perSecond
@@ -204,10 +194,13 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
     this.taskListService.init(
       () => this.poolService.getList(),
       undefined,
-      (pools) => (this.pools = this.transformPoolsData(pools)),
+      (pools) => {
+        this.pools = this.transformPoolsData(pools);
+        this.tableStatus = new TableStatusViewCache();
+      },
       () => {
         this.table.reset(); // Disable loading indicator.
-        this.viewCacheStatusList = [{ status: ViewCacheStatus.ValueException }];
+        this.tableStatus = new TableStatusViewCache(ViewCacheStatus.ValueException);
       },
       (task) => task.name.startsWith(`${BASE_URL}/`),
       (pool, task) => task.metadata['pool_name'] === pool.pool_name,
@@ -221,7 +214,7 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
 
   deletePoolModal() {
     const name = this.selection.first().pool_name;
-    this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
+    this.modalService.show(CriticalConfirmationModalComponent, {
       itemDescription: 'Pool',
       itemNames: [name],
       submitActionObservable: () =>
@@ -240,7 +233,16 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
   }
 
   transformPoolsData(pools: any) {
-    const requiredStats = ['bytes_used', 'max_avail', 'rd_bytes', 'wr_bytes', 'rd', 'wr'];
+    const requiredStats = [
+      'bytes_used',
+      'max_avail',
+      'avail_raw',
+      'percent_used',
+      'rd_bytes',
+      'wr_bytes',
+      'rd',
+      'wr'
+    ];
     const emptyStat: PoolStat = { latest: 0, rate: 0, rates: [] };
 
     _.forEach(pools, (pool: Pool) => {
@@ -250,8 +252,7 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
         stats[stat] = pool.stats && pool.stats[stat] ? pool.stats[stat] : emptyStat;
       });
       pool['stats'] = stats;
-      const avail = stats.bytes_used.latest + stats.max_avail.latest;
-      pool['usage'] = avail > 0 ? stats.bytes_used.latest / avail : avail;
+      pool['usage'] = stats.percent_used.latest;
 
       if (
         !pool.cdExecuting &&
@@ -285,14 +286,16 @@ export class PoolListComponent extends ListWithDetails implements OnInit {
     }
   }
 
-  getDisableDesc(): string | undefined {
-    if (!this.monAllowPoolDelete) {
-      return this.i18n(
-        'Pool deletion is disabled by the mon_allow_pool_delete configuration setting.'
-      );
+  getDisableDesc(): boolean | string {
+    if (this.selection?.hasSelection) {
+      if (!this.monAllowPoolDelete) {
+        return $localize`Pool deletion is disabled by the mon_allow_pool_delete configuration setting.`;
+      }
+
+      return false;
     }
 
-    return undefined;
+    return true;
   }
 
   setExpandedRow(expandedRow: any) {

@@ -5,8 +5,10 @@
 #include <boost/lexical_cast.hpp>
 
 #include "librbd/Utils.h"
+#include "include/random.h"
 #include "include/rbd_types.h"
 #include "include/stringify.h"
+#include "include/neorados/RADOS.hpp"
 #include "include/rbd/features.h"
 #include "common/dout.h"
 #include "librbd/ImageCtx.h"
@@ -54,7 +56,7 @@ std::string generate_image_id(librados::IoCtx &ioctx) {
   librados::Rados rados(ioctx);
 
   uint64_t bid = rados.get_instance_id();
-  std::mt19937 generator{std::random_device{}()};
+  std::mt19937 generator{random_device_t{}()};
   std::uniform_int_distribution<uint32_t> distribution{0, 0xFFFFFFFF};
   uint32_t extra = distribution(generator);
 
@@ -177,6 +179,19 @@ uint32_t get_default_snap_create_flags(ImageCtx *ictx) {
   } else {
     ceph_abort_msg("invalid rbd_default_snapshot_quiesce_mode");
   }
+}
+
+SnapContext get_snap_context(
+    const std::optional<
+      std::pair<std::uint64_t,
+                std::vector<std::uint64_t>>>& write_snap_context) {
+  SnapContext snapc;
+  if (write_snap_context) {
+    snapc = SnapContext{write_snap_context->first,
+                        {write_snap_context->second.begin(),
+                         write_snap_context->second.end()}};
+  }
+  return snapc;
 }
 
 } // namespace util

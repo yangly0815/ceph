@@ -8,6 +8,7 @@ target_include_directories(unit-main PRIVATE
   $<TARGET_PROPERTY:GTest::GTest,INTERFACE_INCLUDE_DIRECTORIES>)
 
 add_subdirectory(cls_hello)
+add_subdirectory(cls_fifo)
 add_subdirectory(cls_lock)
 add_subdirectory(cls_cas)
 add_subdirectory(cls_log)
@@ -74,7 +75,7 @@ if(WITH_SEASTAR)
   add_subdirectory(crimson)
 endif()
 add_subdirectory(system)
-if(WITH_FIO OR WITH_SYSTEM_FIO)
+if(WITH_FIO)
   add_subdirectory(fio)
 endif()
 add_subdirectory(lazy-omap-stats)
@@ -291,10 +292,7 @@ target_link_libraries(ceph_test_librgw_file_nfsns
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
   )
-if(WITH_BOOST_CONTEXT)
   target_link_libraries(ceph_test_librgw_file_nfsns spawn)
-endif()
-
 
 # ceph_test_librgw_file_aw (nfs write transaction [atomic write] tests)
 add_executable(ceph_test_librgw_file_aw
@@ -320,9 +318,7 @@ target_link_libraries(ceph_test_librgw_file_marker
   ${UNITTEST_LIBS}
   ${EXTRALIBS}
   )
-if(WITH_BOOST_CONTEXT)
   target_link_libraries(ceph_test_librgw_file_marker spawn)
-endif()
 
 # ceph_test_rgw_token
 add_executable(ceph_test_rgw_token
@@ -508,7 +504,7 @@ if(WITH_RADOSGW)
   add_dependencies(tests radosgwd radosgw-admin)
 endif()
 #add dependency from fio just to ensure the plugin build isn't failing
-if(WITH_FIO OR WITH_SYSTEM_FIO)
+if(WITH_FIO)
   add_dependencies(tests fio_ceph_objectstore)
 endif()
 
@@ -835,7 +831,7 @@ endif(WITH_RBD)
 add_executable(unittest_ipaddr
   test_ipaddr.cc)
 add_ceph_unittest(unittest_ipaddr)
-target_link_libraries(unittest_ipaddr global)
+target_link_libraries(unittest_ipaddr global GTest::Main)
 
 # unittest_utime
 add_executable(unittest_utime

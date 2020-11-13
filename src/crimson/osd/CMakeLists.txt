@@ -1,4 +1,5 @@
 add_executable(crimson-osd
+  backfill_state.cc
   ec_backend.cc
   heartbeat.cc
   main.cc
@@ -30,19 +31,23 @@ add_executable(crimson-osd
   ${PROJECT_SOURCE_DIR}/src/objclass/class_api.cc
   ${PROJECT_SOURCE_DIR}/src/osd/ClassHandler.cc
   ${PROJECT_SOURCE_DIR}/src/osd/osd_op_util.cc
+  ${PROJECT_SOURCE_DIR}/src/osd/OSDCap.cc
   ${PROJECT_SOURCE_DIR}/src/osd/PeeringState.cc
   ${PROJECT_SOURCE_DIR}/src/osd/PGPeeringEvent.cc
   ${PROJECT_SOURCE_DIR}/src/osd/PGStateUtils.cc
   ${PROJECT_SOURCE_DIR}/src/osd/MissingLoc.cc
   ${PROJECT_SOURCE_DIR}/src/osd/PGLog.cc
+  ${PROJECT_SOURCE_DIR}/src/osd/recovery_types.cc
   ${PROJECT_SOURCE_DIR}/src/osd/osd_perf_counters.cc
   watch.cc
   )
 target_link_libraries(crimson-osd
+  crimson-admin
   crimson-common
   crimson-os
   crimson
   fmt::fmt
+  Boost::MPL
   dmclock::dmclock)
 set_target_properties(crimson-osd PROPERTIES
   POSITION_INDEPENDENT_CODE ${EXE_LINKER_USE_PIE})

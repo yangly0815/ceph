@@ -22,7 +22,7 @@ describe('OSDs page', () => {
 
   describe('check existence of fields on OSD page', () => {
     it('should check that number of rows and count in footer match', () => {
-      osds.getTableTotalCount().then((text) => {
+      osds.getTableCount('total').then((text) => {
         osds.getTableRows().its('length').should('equal', text);
       });
     });
@@ -37,10 +37,6 @@ describe('OSDs page', () => {
         osds.getExpandCollapseElement().click();
       });
 
-      it('should verify that selected footer increases', () => {
-        osds.getTableSelectedCount().should('equal', 1);
-      });
-
       it('should show the correct text for the tab labels', () => {
         cy.get('#tabset-osd-details > li > a').then(($tabs) => {
           const tabHeadings = $tabs.map((_i, e) => e.textContent).get();
@@ -51,7 +47,6 @@ describe('OSDs page', () => {
             'Metadata',
             'Device health',
             'Performance counter',
-            'Histogram',
             'Performance Details'
           ]);
         });

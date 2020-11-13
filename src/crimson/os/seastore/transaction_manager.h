@@ -19,6 +19,7 @@
 
 #include "crimson/osd/exceptions.h"
 
+#include "crimson/os/seastore/segment_cleaner.h"
 #include "crimson/os/seastore/seastore_types.h"
 #include "crimson/os/seastore/cache.h"
 #include "crimson/os/seastore/segment_manager.h"
@@ -29,95 +30,19 @@ namespace crimson::os::seastore {
 class Journal;
 
 /**
- * LogicalCachedExtent
- *
- * CachedExtent with associated lba mapping.
- *
- * Users of TransactionManager should be using extents derived from
- * LogicalCachedExtent.
- */
-class LogicalCachedExtent : public CachedExtent {
-public:
-  template <typename... T>
-  LogicalCachedExtent(T&&... t) : CachedExtent(std::forward<T>(t)...) {}
-
-  void set_pin(LBAPinRef &&pin) { this->pin = std::move(pin); }
-
-  LBAPin &get_pin() {
-    assert(pin);
-    return *pin;
-  }
-
-  laddr_t get_laddr() const {
-    assert(pin);
-    return pin->get_laddr();
-  }
-
-  void apply_delta_and_adjust_crc(
-    paddr_t base, const ceph::bufferlist &bl) final {
-    apply_delta(bl);
-    set_last_committed_crc(get_crc32c());
-  }
-protected:
-  virtual void apply_delta(const ceph::bufferlist &bl) = 0;
-
-private:
-  LBAPinRef pin;
-};
-
-using LogicalCachedExtentRef = TCachedExtentRef<LogicalCachedExtent>;
-struct ref_laddr_cmp {
-  using is_transparent = laddr_t;
-  bool operator()(const LogicalCachedExtentRef &lhs,
-		  const LogicalCachedExtentRef &rhs) const {
-    return lhs->get_laddr() < rhs->get_laddr();
-  }
-  bool operator()(const laddr_t &lhs,
-		  const LogicalCachedExtentRef &rhs) const {
-    return lhs < rhs->get_laddr();
-  }
-  bool operator()(const LogicalCachedExtentRef &lhs,
-		  const laddr_t &rhs) const {
-    return lhs->get_laddr() < rhs;
-  }
-};
-
-using lextent_set_t = addr_extent_set_base_t<
-  laddr_t,
-  LogicalCachedExtentRef,
-  ref_laddr_cmp
-  >;
-
-template <typename T>
-using lextent_list_t = addr_extent_list_base_t<
-  laddr_t, TCachedExtentRef<T>>;
-
-/**
  * TransactionManager
  *
  * Abstraction hiding reading and writing to persistence.
  * Exposes transaction based interface with read isolation.
  */
-class TransactionManager : public JournalSegmentProvider {
+class TransactionManager : public SegmentCleaner::ExtentCallbackInterface {
 public:
   TransactionManager(
     SegmentManager &segment_manager,
+    SegmentCleaner &segment_cleaner,
     Journal &journal,
     Cache &cache,
     LBAManager &lba_manager);
-
-  segment_id_t next = 0;
-  get_segment_ret get_segment() final {
-    // TODO -- part of gc
-    return get_segment_ret(
-      get_segment_ertr::ready_future_marker{},
-      next++);
-  }
-
-  void put_segment(segment_id_t segment) final {
-    // TODO -- part of gc
-    return;
-  }
 
   /// Writes initial metadata to disk
   using mkfs_ertr = crimson::errorator<
@@ -139,7 +64,12 @@ public:
 
   /// Creates empty transaction
   TransactionRef create_transaction() {
-    return lba_manager.create_transaction();
+    return make_transaction();
+  }
+
+  /// Creates weak transaction
+  TransactionRef create_weak_transaction() {
+    return make_weak_transaction();
   }
 
   /**
@@ -179,8 +109,11 @@ public:
 	    t,
 	    pin->get_paddr(),
 	    pin->get_length()
-	  ).safe_then([&pin, &ret_ref](auto ref) mutable {
-	    ref->set_pin(std::move(pin));
+	  ).safe_then([this, &pin, &ret_ref](auto ref) mutable {
+	    if (!ref->has_pin()) {
+	      ref->set_pin(std::move(pin));
+	      lba_manager.add_pin(ref->get_pin());
+	    }
 	    ret_ref.push_back(std::make_pair(ref->get_laddr(), ref));
 	    crimson::get_logger(ceph_subsys_filestore).debug(
 	      "read_extents: got extent {}",
@@ -197,15 +130,31 @@ public:
 
   /// Obtain mutable copy of extent
   LogicalCachedExtentRef get_mutable_extent(Transaction &t, LogicalCachedExtentRef ref) {
+    auto &logger = crimson::get_logger(ceph_subsys_filestore);
     auto ret = cache.duplicate_for_write(
       t,
       ref)->cast<LogicalCachedExtent>();
-    ret->set_pin(ref->get_pin().duplicate());
+    if (!ret->has_pin()) {
+      logger.debug(
+	"{}: duplicating {} for write: {}",
+	__func__,
+	*ref,
+	*ret);
+      ret->set_pin(ref->get_pin().duplicate());
+    } else {
+      logger.debug(
+	"{}: {} already pending",
+	__func__,
+	*ref);
+      assert(ref->is_pending());
+      assert(&*ref == &*ret);
+    }
     return ret;
   }
 
+
   using ref_ertr = LBAManager::ref_ertr;
-  using ref_ret = LBAManager::ref_ret;
+  using ref_ret = ref_ertr::future<unsigned>;
 
   /// Add refcount for ref
   ref_ret inc_ref(
@@ -267,12 +216,47 @@ public:
     >;
   submit_transaction_ertr::future<> submit_transaction(TransactionRef);
 
+  /// SegmentCleaner::ExtentCallbackInterface
+
+  using SegmentCleaner::ExtentCallbackInterface::get_next_dirty_extents_ret;
+  get_next_dirty_extents_ret get_next_dirty_extents(
+    journal_seq_t seq) final;
+
+  using SegmentCleaner::ExtentCallbackInterface::rewrite_extent_ret;
+  rewrite_extent_ret rewrite_extent(
+    Transaction &t,
+    CachedExtentRef extent) final;
+
+  using SegmentCleaner::ExtentCallbackInterface::get_extent_if_live_ret;
+  get_extent_if_live_ret get_extent_if_live(
+    Transaction &t,
+    extent_types_t type,
+    paddr_t addr,
+    laddr_t laddr,
+    segment_off_t len) final;
+
+  using scan_extents_ret =
+    SegmentCleaner::ExtentCallbackInterface::scan_extents_ret;
+  scan_extents_ret scan_extents(
+    paddr_t addr,
+    extent_len_t bytes_to_read) final {
+    return journal.scan_extents(addr, bytes_to_read);
+  }
+
+  using release_segment_ret =
+    SegmentCleaner::ExtentCallbackInterface::release_segment_ret;
+  release_segment_ret release_segment(
+    segment_id_t id) final {
+    return segment_manager.release(id);
+  }
+
   ~TransactionManager();
 
 private:
   friend class Transaction;
 
   SegmentManager &segment_manager;
+  SegmentCleaner &segment_cleaner;
   Cache &cache;
   LBAManager &lba_manager;
   Journal &journal;

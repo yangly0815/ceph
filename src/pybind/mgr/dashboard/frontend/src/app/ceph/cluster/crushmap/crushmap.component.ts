@@ -6,10 +6,10 @@ import {
   TreeModel,
   TreeNode,
   TREE_ACTIONS
-} from 'angular-tree-component';
+} from '@circlon/angular-tree-component';
 
-import { HealthService } from '../../../shared/api/health.service';
-import { Icons } from '../../../shared/enum/icons.enum';
+import { HealthService } from '~/app/shared/api/health.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
 
 @Component({
   selector: 'cd-crushmap',

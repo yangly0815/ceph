@@ -74,7 +74,6 @@ struct rgw_http_req_data : public RefCountedObject {
     if (done) {
       return ret;
     }
-#ifdef HAVE_BOOST_CONTEXT
     if (y) {
       auto& context = y.get_io_context();
       auto& yield = y.get_yield_context();
@@ -86,7 +85,6 @@ struct rgw_http_req_data : public RefCountedObject {
     if (is_asio_thread) {
       dout(20) << "WARNING: blocking http request" << dendl;
     }
-#endif
     std::unique_lock l{lock};
     cond.wait(l, [this]{return done==true;});
     return ret;
@@ -941,6 +939,13 @@ void RGWHTTPManager::manage_pending_requests()
 
   std::unique_lock wl{reqs_lock};
 
+  if (!reqs_change_state.empty()) {
+    for (auto siter : reqs_change_state) {
+      _set_req_state(siter);
+    }
+    reqs_change_state.clear();
+  }
+
   if (!unregistered_reqs.empty()) {
     for (auto& r : unregistered_reqs) {
       _unlink_request(r);
@@ -963,13 +968,6 @@ void RGWHTTPManager::manage_pending_requests()
     } else {
       max_threaded_req = iter->first + 1;
     }
-  }
-
-  if (!reqs_change_state.empty()) {
-    for (auto siter : reqs_change_state) {
-      _set_req_state(siter);
-    }
-    reqs_change_state.clear();
   }
 
   for (auto piter : remove_reqs) {

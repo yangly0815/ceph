@@ -1,8 +1,8 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
 
-import { SettingsService } from '../../api/settings.service';
-import { CdPwdExpirationSettings } from '../../models/cd-pwd-expiration-settings';
-import { AuthStorageService } from '../../services/auth-storage.service';
+import { SettingsService } from '~/app/shared/api/settings.service';
+import { CdPwdExpirationSettings } from '~/app/shared/models/cd-pwd-expiration-settings';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 
 @Component({
   selector: 'cd-pwd-expiration-notification',
@@ -31,8 +31,9 @@ export class PwdExpirationNotificationComponent implements OnInit, OnDestroy {
         } else {
           this.alertType = 'warning';
         }
-        this.displayNotification = true;
-        this.authStorageService.isPwdDisplayedSource.next(true);
+        this.displayNotification =
+          this.expirationDays <= this.pwdExpirationSettings.pwdExpirationWarning1;
+        this.authStorageService.isPwdDisplayedSource.next(this.displayNotification);
       }
     });
   }

@@ -7,7 +7,7 @@ from textwrap import dedent
 
 from ceph_volume import decorators, terminal, process
 from ceph_volume.api import lvm as api
-from ceph_volume.util import system, encryption, disk, arg_validators, str_to_int
+from ceph_volume.util import system, encryption, disk, arg_validators, str_to_int, merge_dict
 from ceph_volume.util.device import Device
 from ceph_volume.systemd import systemctl
 
@@ -87,11 +87,11 @@ def find_associated_devices(osd_id=None, osd_fsid=None):
         raise RuntimeError('Unable to find any LV for zapping OSD: '
                            '%s' % osd_id or osd_fsid)
 
-    devices_to_zap = ensure_associated_lvs(lvs)
+    devices_to_zap = ensure_associated_lvs(lvs, lv_tags)
     return [Device(path) for path in set(devices_to_zap) if path]
 
 
-def ensure_associated_lvs(lvs):
+def ensure_associated_lvs(lvs, lv_tags={}):
     """
     Go through each LV and ensure if backing devices (journal, wal, block)
     are LVs or partitions, so that they can be accurately reported.
@@ -100,9 +100,10 @@ def ensure_associated_lvs(lvs):
     # receive a filtering for osd.1, and have multiple failed deployments
     # leaving many journals with osd.1 - usually, only a single LV will be
     # returned
-    journal_lvs = api.get_lvs(tags={'ceph.type': 'journal'})
-    db_lvs = api.get_lvs(tags={'ceph.type': 'db'})
-    wal_lvs = api.get_lvs(tags={'ceph.type': 'wal'})
+
+    journal_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'journal'}))
+    db_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'db'}))
+    wal_lvs = api.get_lvs(tags=merge_dict(lv_tags, {'ceph.type': 'wal'}))
     backing_devices = [(journal_lvs, 'journal'), (db_lvs, 'db'),
                        (wal_lvs, 'wal')]
 
@@ -289,7 +290,7 @@ class Zap(object):
 
     @decorators.needs_root
     def zap_osd(self):
-        if self.args.osd_id:
+        if self.args.osd_id and not self.args.no_systemd:
             osd_is_running = systemctl.osd_is_active(self.args.osd_id)
             if osd_is_running:
                 mlogger.error("OSD ID %s is running, stop it with:" % self.args.osd_id)
@@ -381,6 +382,13 @@ class Zap(object):
         parser.add_argument(
             '--osd-fsid',
             help='Specify an OSD FSID to detect associated devices for zapping',
+        )
+
+        parser.add_argument(
+            '--no-systemd',
+            dest='no_systemd',
+            action='store_true',
+            help='Skip systemd unit checks',
         )
 
         if len(self.argv) == 0:

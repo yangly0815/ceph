@@ -71,14 +71,12 @@ include_directories(
 
 if(WIN32)
   include_directories(
-  ${PROJECT_SOURCE_DIR}/src/include/win32)
+    ${PROJECT_SOURCE_DIR}/src/include/win32)
   # Boost complains if winsock2.h (or windows.h) is included before asio.hpp.
   add_definitions(-include winsock_wrapper.h)
-endif()
-
-if(OFED_PREFIX)
-  include_directories(SYSTEM ${OFED_PREFIX}/include)
-  link_directories(${OFED_PREFIX}/lib)
+  # Boost is also defining some of the errno values, we'll have
+  # to avoid mismatches.
+  add_definitions(-include win32_errno.h)
 endif()
 
 if(FREEBSD)
@@ -188,8 +186,6 @@ if(WITH_BLUESTORE)
   if(LINUX)
     find_package(aio)
     set(HAVE_LIBAIO ${AIO_FOUND})
-    find_package(zbc)
-    set(HAVE_LIBZBC ${ZBC_FOUND})
   elseif(FREEBSD)
     # POSIX AIO is integrated into FreeBSD kernel, and exposed by libc.
     set(HAVE_POSIXAIO ON)
@@ -197,7 +193,15 @@ if(WITH_BLUESTORE)
 endif()
 
 include(CMakeDependentOption)
-CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring bluestore backend" OFF
+
+CMAKE_DEPENDENT_OPTION(WITH_ZBD "Enable libzbd bluestore backend" OFF
+  "WITH_BLUESTORE" OFF)
+if(WITH_ZBD)
+  find_package(zbd REQUIRED)
+  set(HAVE_LIBZBD ${ZBD_FOUND})
+endif()
+
+CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring bluestore backend" ON
   "WITH_BLUESTORE;HAVE_LIBAIO" OFF)
 set(HAVE_LIBURING ${WITH_LIBURING})
 
@@ -209,6 +213,9 @@ CMAKE_DEPENDENT_OPTION(WITH_BLUESTORE_PMEM "Enable PMDK libraries" OFF
 
 CMAKE_DEPENDENT_OPTION(WITH_RBD_RWL "Enable librbd persistent write back cache" OFF
   "WITH_RBD" OFF)
+
+CMAKE_DEPENDENT_OPTION(WITH_RBD_SSD_CACHE "Enable librbd persistent write back cache for SSDs" OFF
+    "WITH_RBD" OFF)
 
 CMAKE_DEPENDENT_OPTION(WITH_SYSTEM_PMDK "Require and build with system PMDK" OFF
   "WITH_RBD_RWL OR WITH_BLUESTORE_PMEM" OFF)
@@ -357,11 +364,6 @@ if(WITH_BLKIN)
   include_directories(SYSTEM src/blkin/blkin-lib)
 endif(WITH_BLKIN)
 
-option(WITH_BOOST_CONTEXT "Enable boost::asio stackful coroutines" ON)
-if(WITH_BOOST_CONTEXT)
-  set(HAVE_BOOST_CONTEXT ON)
-endif()
-
 #option for RGW
 option(WITH_RADOSGW "Rados Gateway is enabled" ON)
 option(WITH_RADOSGW_FCGI_FRONTEND "Rados Gateway's FCGI frontend is enabled" OFF)
@@ -374,10 +376,6 @@ if(WITH_RADOSGW)
   find_package(EXPAT REQUIRED)
   if(WITH_RADOSGW_FCGI_FRONTEND)
     find_package(fcgi REQUIRED)
-  endif()
-  if(WITH_RADOSGW_BEAST_FRONTEND AND NOT WITH_BOOST_CONTEXT)
-    message(WARNING "disabling WITH_RADOSGW_BEAST_FRONTEND, which depends on WITH_BOOST_CONTEXT")
-    set(WITH_RADOSGW_BEAST_FRONTEND OFF)
   endif()
   find_package(OATH REQUIRED)
 
@@ -435,12 +433,7 @@ option(WITH_CEPHFS "CephFS is enabled" ON)
 
 # Please specify 3.[0-7] if you want to build with a certain version of python3.
 set(WITH_PYTHON3 "3" CACHE STRING "build with specified python3 version")
-if(NOT WITH_PYTHON3)
-  message(FATAL_ERROR "WITH_PYTHON3 should always be enabled")
-elseif(WITH_PYTHON3 MATCHES "^(1|ON|YES|TRUE|Y)$")
-  set(WITH_PYTHON3 "3")
-  message(NOTICE "Please specify a Python3 version instead of a BOOLEAN")
-elseif(NOT WITH_PYTHON3 STREQUAL "3")
+if(NOT WITH_PYTHON3 STREQUAL "3")
   set(find_python3_exact "EXACT")
 endif()
 find_package(Python3 ${WITH_PYTHON3} ${find_python3_exact} REQUIRED
@@ -470,8 +463,6 @@ option(WITH_REENTRANT_STRSIGNAL "strsignal is reentrant" OFF)
 if(WITH_REENTRANT_STRSIGNAL)
   set(HAVE_REENTRANT_STRSIGNAL 1 CACHE INTERNAL "Reentrant strsignal is supported.")
 endif()
-
-set(HAVE_LIBROCKSDB 1)
 
 # -lz link into kv
 find_package(ZLIB REQUIRED)
@@ -515,14 +506,7 @@ set(CEPH_TEST_TIMEOUT 3600 CACHE STRING
 
 # fio
 option(WITH_FIO "build with fio plugin enabled" OFF)
-option(WITH_SYSTEM_FIO "require and build with system fio" OFF)
-if(WITH_SYSTEM_FIO)
-  find_package(fio REQUIRED)
-elseif(WITH_FIO)
-  if (NOT FIO_INCLUDE_DIR)
-    # Use local external fio if include directory is not set
-    set(FIO_INCLUDE_DIR ${CMAKE_BINARY_DIR}/src/fio)
-  endif()
+if(WITH_FIO)
   include(BuildFIO)
   build_fio()
 endif()
@@ -555,8 +539,9 @@ endif()
 if(sanitizers)
   find_package(Sanitizers REQUIRED ${sanitizers})
   add_compile_options(${Sanitizers_COMPILE_OPTIONS})
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${Sanitizers_COMPILE_OPTIONS}")
-  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${Sanitizers_COMPILE_OPTIONS}")
+  string(REPLACE ";" " " sanitiers_compile_flags "${Sanitizers_COMPILE_OPTIONS}")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${sanitiers_compile_flags}")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${sanitiers_compile_flags}")
 endif()
 
 # Rocksdb
@@ -574,15 +559,12 @@ option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 # Boost::thread depends on Boost::atomic, so list it explicitly.
 set(BOOST_COMPONENTS
   atomic chrono thread system regex random program_options date_time
-  iostreams)
+  iostreams context coroutine)
 set(BOOST_HEADER_COMPONENTS container)
 
 if(WITH_MGR)
   list(APPEND BOOST_COMPONENTS
     python${MGR_PYTHON_VERSION_MAJOR}${MGR_PYTHON_VERSION_MINOR})
-endif()
-if(WITH_BOOST_CONTEXT)
-  list(APPEND BOOST_COMPONENTS context coroutine)
 endif()
 if(WITH_SEASTAR)
   list(APPEND BOOST_COMPONENTS filesystem timer)
@@ -599,13 +581,17 @@ if(WITH_SYSTEM_BOOST)
   if(BOOST_ROOT AND CMAKE_LIBRARY_ARCHITECTURE)
     set(BOOST_LIBRARYDIR "${BOOST_ROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
   endif()
-  find_package(Boost 1.67 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
+  find_package(Boost 1.72 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
+  if(NOT ENABLE_SHARED)
+    set_property(TARGET Boost::iostreams APPEND PROPERTY
+      INTERFACE_LINK_LIBRARIES ZLIB::ZLIB)
+  endif()
 else()
   set(BOOST_J 1 CACHE STRING
     "max jobs for Boost build") # override w/-DBOOST_J=<n>
   set(Boost_USE_STATIC_LIBS ON)
   include(BuildBoost)
-  build_boost(1.67
+  build_boost(1.72
     COMPONENTS ${BOOST_COMPONENTS} ${BOOST_HEADER_COMPONENTS})
 endif()
 include_directories(BEFORE SYSTEM ${Boost_INCLUDE_DIRS})
@@ -682,7 +668,7 @@ add_tags(ctags
   SRC_DIR src
   TAG_FILE tags
   EXCLUDE_OPTS ${CTAG_EXCLUDES}
-  EXCLUDES "*.js" "*.css")
+  EXCLUDES "*.js" "*.css" ".tox" "python-common/build")
 add_custom_target(tags DEPENDS ctags)
 
 set(VERSION 15.2.0)

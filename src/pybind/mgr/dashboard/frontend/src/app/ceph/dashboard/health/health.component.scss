@@ -1,10 +1,10 @@
-@import 'defaults.scss';
+@use './src/styles/vendor/variables' as vv;
 
 cd-info-card {
   padding: 0 0.5vw;
 }
 
-::ng-deep .pg-status-popover-wrapper {
+::ng-deep cd-health .pg-status-popover-wrapper {
   position: relative;
 
   .popover {
@@ -15,7 +15,7 @@ cd-info-card {
     width: 116%;
 
     .popover-body {
-      font-size: 12px;
+      font-size: 1rem;
       max-height: 19vh;
       max-width: 100%;
     }
@@ -27,7 +27,7 @@ cd-info-card {
 }
 
 .card-text-error {
-  color: $color-solid-red;
+  color: vv.$danger;
   display: inline;
 }
 

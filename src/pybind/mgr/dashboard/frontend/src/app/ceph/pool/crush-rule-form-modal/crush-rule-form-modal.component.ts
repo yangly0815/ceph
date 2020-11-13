@@ -2,18 +2,17 @@ import { Component, EventEmitter, OnInit, Output } from '@angular/core';
 import { Validators } from '@angular/forms';
 
 import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { CrushRuleService } from '../../../shared/api/crush-rule.service';
-import { CrushNodeSelectionClass } from '../../../shared/classes/crush.node.selection.class';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { CrushNode } from '../../../shared/models/crush-node';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { CrushRuleService } from '~/app/shared/api/crush-rule.service';
+import { CrushNodeSelectionClass } from '~/app/shared/classes/crush.node.selection.class';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { CrushNode } from '~/app/shared/models/crush-node';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 @Component({
   selector: 'cd-crush-rule-form-modal',
@@ -36,12 +35,11 @@ export class CrushRuleFormModalComponent extends CrushNodeSelectionClass impleme
     public activeModal: NgbActiveModal,
     private taskWrapper: TaskWrapperService,
     private crushRuleService: CrushRuleService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
     this.action = this.actionLabels.CREATE;
-    this.resource = this.i18n('Crush Rule');
+    this.resource = $localize`Crush Rule`;
     this.createForm();
   }
 

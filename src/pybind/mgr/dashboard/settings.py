@@ -3,7 +3,6 @@ from __future__ import absolute_import
 
 import errno
 import inspect
-from six import add_metaclass
 
 from . import mgr
 
@@ -47,7 +46,9 @@ class Options(object):
 
     # Prometheus settings
     PROMETHEUS_API_HOST = ('', str)
+    PROMETHEUS_API_SSL_VERIFY = (True, bool)
     ALERTMANAGER_API_HOST = ('', str)
+    ALERTMANAGER_API_SSL_VERIFY = (True, bool)
 
     # iSCSI management settings
     ISCSI_API_SSL_VERIFICATION = (True, bool)
@@ -86,7 +87,7 @@ class Options(object):
     @staticmethod
     def has_default_value(name):
         return getattr(Settings, name, None) is None or \
-               getattr(Settings, name) == getattr(Options, name)[0]
+            getattr(Settings, name) == getattr(Options, name)[0]
 
 
 class SettingsMeta(type):
@@ -112,8 +113,7 @@ class SettingsMeta(type):
 
 
 # pylint: disable=no-init
-@add_metaclass(SettingsMeta)
-class Settings(object):
+class Settings(object, metaclass=SettingsMeta):
     pass
 
 

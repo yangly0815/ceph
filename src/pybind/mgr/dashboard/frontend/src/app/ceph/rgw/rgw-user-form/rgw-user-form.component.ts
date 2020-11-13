@@ -2,21 +2,20 @@ import { Component, OnInit } from '@angular/core';
 import { AbstractControl, ValidationErrors, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { concat as observableConcat, forkJoin as observableForkJoin, Observable } from 'rxjs';
 
-import { RgwUserService } from '../../../shared/api/rgw-user.service';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdForm } from '../../../shared/forms/cd-form';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators, isEmptyInputValue } from '../../../shared/forms/cd-validators';
-import { FormatterService } from '../../../shared/services/formatter.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { NotificationService } from '../../../shared/services/notification.service';
+import { RgwUserService } from '~/app/shared/api/rgw-user.service';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators, isEmptyInputValue } from '~/app/shared/forms/cd-validators';
+import { FormatterService } from '~/app/shared/services/formatter.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
 import { RgwUserCapabilities } from '../models/rgw-user-capabilities';
 import { RgwUserCapability } from '../models/rgw-user-capability';
 import { RgwUserS3Key } from '../models/rgw-user-s3-key';
@@ -55,14 +54,13 @@ export class RgwUserFormComponent extends CdForm implements OnInit {
     private rgwUserService: RgwUserService,
     private modalService: ModalService,
     private notificationService: NotificationService,
-    private i18n: I18n,
     public actionLabels: ActionLabelsI18n
   ) {
     super();
-    this.resource = this.i18n('user');
-    this.subuserLabel = this.i18n('subuser');
-    this.s3keyLabel = this.i18n('S3 Key');
-    this.capabilityLabel = this.i18n('capability');
+    this.resource = $localize`user`;
+    this.subuserLabel = $localize`subuser`;
+    this.s3keyLabel = $localize`S3 Key`;
+    this.capabilityLabel = $localize`capability`;
     this.createForm();
   }
 
@@ -250,12 +248,12 @@ export class RgwUserFormComponent extends CdForm implements OnInit {
         const args = this._getUpdateArgs();
         this.submitObservables.push(this.rgwUserService.update(uid, args));
       }
-      notificationTitle = this.i18n(`Updated Object Gateway user '{{uid}}'`, { uid: uid });
+      notificationTitle = $localize`Updated Object Gateway user '${uid}'`;
     } else {
       // Add
       const args = this._getCreateArgs();
       this.submitObservables.push(this.rgwUserService.create(args));
-      notificationTitle = this.i18n(`Created Object Gateway user '{{uid}}'`, { uid: uid });
+      notificationTitle = $localize`Created Object Gateway user '${uid}'`;
     }
     // Check if user quota has been modified.
     if (this._isUserQuotaDirty()) {

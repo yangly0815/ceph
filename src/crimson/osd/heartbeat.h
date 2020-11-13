@@ -36,9 +36,11 @@ public:
 			  entity_addrvec_t back);
   seastar::future<> stop();
 
+  using osds_t = std::vector<osd_id_t>;
   void add_peer(osd_id_t peer, epoch_t epoch);
   void update_peers(int whoami);
   void remove_peer(osd_id_t peer);
+  osds_t get_peers() const;
 
   const entity_addrvec_t& get_front_addrs() const;
   const entity_addrvec_t& get_back_addrs() const;
@@ -62,9 +64,8 @@ private:
 				 Ref<MOSDPing> m);
   seastar::future<> handle_you_died();
 
-  using osds_t = std::vector<osd_id_t>;
   /// remove down OSDs
-  /// @return peers not needed in this epoch
+  /// @return peers not added in this epoch
   osds_t remove_down_peers();
   /// add enough reporters for fast failure detection
   void add_reporter_peers(int whoami);
@@ -175,6 +176,11 @@ class Heartbeat::Connection {
       is_winner_side{is_winner_side} {
     connect();
   }
+  Connection(const Connection&) = delete;
+  Connection(Connection&&) = delete;
+  Connection& operator=(const Connection&) = delete;
+  Connection& operator=(Connection&&) = delete;
+
   ~Connection();
 
   bool matches(crimson::net::Connection* _conn) const;
@@ -234,7 +240,7 @@ class Heartbeat::Connection {
   crimson::net::ConnectionRef conn;
   bool is_connected = false;
 
- friend std::ostream& operator<<(std::ostream& os, const Connection c) {
+ friend std::ostream& operator<<(std::ostream& os, const Connection& c) {
    if (c.type == type_t::front) {
      return os << "con_front(osd." << c.peer << ")";
    } else {
@@ -392,6 +398,7 @@ class Heartbeat::Peer final : private Heartbeat::ConnectionListener {
   ~Peer();
   Peer(Peer&&) = delete;
   Peer(const Peer&) = delete;
+  Peer& operator=(Peer&&) = delete;
   Peer& operator=(const Peer&) = delete;
 
   void set_epoch(epoch_t epoch) { session.set_epoch(epoch); }

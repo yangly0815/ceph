@@ -26,6 +26,7 @@
 
 #include "rgw_client_io.h"
 #include "rgw_resolve.h"
+#include "rgw_sal_rados.h"
 
 #include <numeric>
 
@@ -566,9 +567,9 @@ void end_header(struct req_state* s, RGWOp* op, const char *content_type,
 
   dump_trans_id(s);
 
-  if ((!s->is_err()) &&
-      (s->bucket_info.owner != s->user->get_id()) &&
-      (s->bucket_info.requester_pays)) {
+  if ((!s->is_err()) && s->bucket &&
+      (s->bucket->get_info().owner != s->user->get_id()) &&
+      (s->bucket->get_info().requester_pays)) {
     dump_header(s, "x-amz-request-charged", "requester");
   }
 
@@ -1022,7 +1023,7 @@ int RGWPutObj_ObjStore::get_params()
     {
       return ret;
     }
-    torrent.set_info_name((s->object).name);
+    torrent.set_info_name(s->object->get_name());
   }
   /* end gettorrent */
   supplied_md5_b64 = s->info.env->get("HTTP_CONTENT_MD5");
@@ -1626,7 +1627,7 @@ int RGWDeleteMultiObj_ObjStore::get_params()
   }
 
   // everything is probably fine, set the bucket
-  bucket = s->bucket;
+  bucket = s->bucket.get();
 
   const auto max_size = s->cct->_conf->rgw_max_put_param_size;
   std::tie(op_ret, data) = rgw_rest_read_all_input(s, max_size, false);
@@ -1637,7 +1638,7 @@ int RGWDeleteMultiObj_ObjStore::get_params()
 void RGWRESTOp::send_response()
 {
   if (!flusher.did_start()) {
-    set_req_state_err(s, http_ret);
+    set_req_state_err(s, get_ret());
     dump_errno(s);
     end_header(s, this);
   }
@@ -2294,7 +2295,7 @@ RGWHandler_REST* RGWREST::get_handler(
     *pmgr = m;
   }
 
-  RGWHandler_REST* handler = m->get_handler(s, auth_registry, frontend_prefix);
+  RGWHandler_REST* handler = m->get_handler(store, s, auth_registry, frontend_prefix);
   if (! handler) {
     *init_error = -ERR_METHOD_NOT_ALLOWED;
     return NULL;

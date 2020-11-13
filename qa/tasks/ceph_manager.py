@@ -13,10 +13,9 @@ import logging
 import threading
 import traceback
 import os
-import six
 
-from io import BytesIO
-from six import StringIO
+from io import BytesIO, StringIO
+from subprocess import DEVNULL
 from teuthology import misc as teuthology
 from tasks.scrub import Scrubber
 from tasks.util.rados import cmd_erasure_code_profile
@@ -27,10 +26,6 @@ from teuthology.orchestra import run
 from teuthology.exceptions import CommandFailedError
 from tasks.thrasher import Thrasher
 
-try:
-    from subprocess import DEVNULL # py3k
-except ImportError:
-    DEVNULL = open(os.devnull, 'r+')  # type: ignore
 
 DEFAULT_CONF_PATH = '/etc/ceph/ceph.conf'
 
@@ -312,7 +307,7 @@ class OSDThrasher(Thrasher):
                                         "exp list-pgs failure with status {ret}".
                                         format(ret=proc.exitstatus))
 
-            pgs = six.ensure_str(proc.stdout.getvalue()).split('\n')[:-1]
+            pgs = proc.stdout.getvalue().split('\n')[:-1]
             if len(pgs) == 0:
                 self.log("No PGs found for osd.{osd}".format(osd=exp_osd))
                 return
@@ -377,7 +372,7 @@ class OSDThrasher(Thrasher):
                     raise Exception("ceph-objectstore-tool: "
                                     "imp list-pgs failure with status {ret}".
                                     format(ret=proc.exitstatus))
-                pgs = six.ensure_str(proc.stdout.getvalue()).split('\n')[:-1]
+                pgs = proc.stdout.getvalue().split('\n')[:-1]
                 if pg not in pgs:
                     self.log("Moving pg {pg} from osd.{fosd} to osd.{tosd}".
                              format(pg=pg, fosd=exp_osd, tosd=imp_osd))
@@ -1266,22 +1261,20 @@ class ObjectStoreTool:
         lines.append(cmd)
         return "\n".join(lines)
 
-    def run(self, options, args, stdin=None, stdout=None):
-        if stdout is None:
-            stdout = BytesIO()
+    def run(self, options, args):
         self.manager.kill_osd(self.osd)
-        cmd = self.build_cmd(options, args, stdin)
+        cmd = self.build_cmd(options, args, None)
         self.manager.log(cmd)
         try:
             proc = self.remote.run(args=['bash', '-e', '-x', '-c', cmd],
                                    check_status=False,
-                                   stdout=stdout,
+                                   stdout=BytesIO(),
                                    stderr=BytesIO())
             proc.wait()
             if proc.exitstatus != 0:
                 self.manager.log("failed with " + str(proc.exitstatus))
-                error = six.ensure_str(proc.stdout.getvalue())  + " " + \
-                        six.ensure_str(proc.stderr.getvalue())
+                error = proc.stdout.getvalue().decode()  + " " + \
+                        proc.stderr.getvalue().decode()
                 raise Exception(error)
         finally:
             if self.do_revive:
@@ -1333,61 +1326,39 @@ class CephManager:
             except CommandFailedError:
                 self.log('Failed to get pg_num from pool %s, ignoring' % pool)
 
+    def run_cluster_cmd(self, **kwargs):
+        """
+        Run a Ceph command and return the object representing the process
+        for the command.
+
+        Accepts arguments same as that of teuthology.orchestra.run.run()
+        """
+        if self.cephadm:
+            return shell(self.ctx, self.cluster, self.controller,
+                         args=['ceph'] + list(kwargs['args']),
+                         stdout=StringIO(),
+                         check_status=kwargs.get('check_status', True))
+
+        testdir = teuthology.get_testdir(self.ctx)
+        prefix = ['sudo', 'adjust-ulimits', 'ceph-coverage',
+                  f'{testdir}/archive/coverage', 'timeout', '120', 'ceph',
+                  '--cluster', self.cluster]
+        kwargs['args'] = prefix + list(kwargs['args'])
+        return self.controller.run(**kwargs)
+
     def raw_cluster_cmd(self, *args):
         """
         Start ceph on a raw cluster.  Return count
         """
-        if self.cephadm:
-            proc = shell(self.ctx, self.cluster, self.controller,
-                         args=['ceph'] + list(args),
-                         stdout=StringIO())
-        else:
-            testdir = teuthology.get_testdir(self.ctx)
-            ceph_args = [
-                'sudo',
-                'adjust-ulimits',
-                'ceph-coverage',
-                '{tdir}/archive/coverage'.format(tdir=testdir),
-                'timeout',
-                '120',
-                'ceph',
-                '--cluster',
-                self.cluster,
-                '--log-early',
-            ]
-            ceph_args.extend(args)
-            proc = self.controller.run(
-                args=ceph_args,
-                stdout=StringIO(),
-            )
-        return proc.stdout.getvalue()
+        return self.run_cluster_cmd(**{'args': args,
+                                       'stdout': StringIO()}).stdout.getvalue()
 
     def raw_cluster_cmd_result(self, *args, **kwargs):
         """
         Start ceph on a cluster.  Return success or failure information.
         """
-        if self.cephadm:
-            proc = shell(self.ctx, self.cluster, self.controller,
-                         args=['ceph'] + list(args),
-                         check_status=False)
-        else:
-            testdir = teuthology.get_testdir(self.ctx)
-            ceph_args = [
-                'sudo',
-                'adjust-ulimits',
-                'ceph-coverage',
-                '{tdir}/archive/coverage'.format(tdir=testdir),
-                'timeout',
-                '120',
-                'ceph',
-                '--cluster',
-                self.cluster,
-            ]
-            ceph_args.extend(args)
-            kwargs['args'] = ceph_args
-            kwargs['check_status'] = False
-            proc = self.controller.run(**kwargs)
-        return proc.exitstatus
+        kwargs['args'], kwargs['check_status'] = args, False
+        return self.run_cluster_cmd(**kwargs).exitstatus
 
     def run_ceph_w(self, watch_channel=None):
         """
@@ -1467,7 +1438,7 @@ class CephManager:
                         wait for all specified osds, but some of them could be
                         moved out of osdmap, so we cannot get their updated
                         stat seq from monitor anymore. in that case, you need
-                        to pass a blacklist.
+                        to pass a blocklist.
         :param wait_for_mon: wait for mon to be synced with mgr. 0 to disable
                              it. (5 min by default)
         """
@@ -1899,7 +1870,7 @@ class CephManager:
         :param erasure_code_use_overwrites: if true, allow overwrites
         """
         with self.lock:
-            assert isinstance(pool_name, six.string_types)
+            assert isinstance(pool_name, str)
             assert isinstance(pg_num, int)
             assert pool_name not in self.pools
             self.log("creating pool_name %s" % (pool_name,))
@@ -1951,7 +1922,7 @@ class CephManager:
         :param pool_name: Pool to be removed
         """
         with self.lock:
-            assert isinstance(pool_name, six.string_types)
+            assert isinstance(pool_name, str)
             assert pool_name in self.pools
             self.log("removing pool_name %s" % (pool_name,))
             del self.pools[pool_name]
@@ -1971,7 +1942,7 @@ class CephManager:
         Return the number of pgs in the pool specified.
         """
         with self.lock:
-            assert isinstance(pool_name, six.string_types)
+            assert isinstance(pool_name, str)
             if pool_name in self.pools:
                 return self.pools[pool_name]
             return 0
@@ -1983,8 +1954,8 @@ class CephManager:
         :returns: property as string
         """
         with self.lock:
-            assert isinstance(pool_name, six.string_types)
-            assert isinstance(prop, six.string_types)
+            assert isinstance(pool_name, str)
+            assert isinstance(prop, str)
             output = self.raw_cluster_cmd(
                 'osd',
                 'pool',
@@ -2005,8 +1976,8 @@ class CephManager:
         This routine retries if set operation fails.
         """
         with self.lock:
-            assert isinstance(pool_name, six.string_types)
-            assert isinstance(prop, six.string_types)
+            assert isinstance(pool_name, str)
+            assert isinstance(prop, str)
             assert isinstance(val, int)
             tries = 0
             while True:
@@ -2033,7 +2004,7 @@ class CephManager:
         Increase the number of pgs in a pool
         """
         with self.lock:
-            assert isinstance(pool_name, six.string_types)
+            assert isinstance(pool_name, str)
             assert isinstance(by, int)
             assert pool_name in self.pools
             if self.get_num_creating() > 0:
@@ -2053,7 +2024,7 @@ class CephManager:
         with self.lock:
             self.log('contract_pool %s by %s min %s' % (
                      pool_name, str(by), str(min_pgs)))
-            assert isinstance(pool_name, six.string_types)
+            assert isinstance(pool_name, str)
             assert isinstance(by, int)
             assert pool_name in self.pools
             if self.get_num_creating() > 0:
@@ -2093,7 +2064,7 @@ class CephManager:
         Set pgpnum property of pool_name pool.
         """
         with self.lock:
-            assert isinstance(pool_name, six.string_types)
+            assert isinstance(pool_name, str)
             assert pool_name in self.pools
             if not force and self.get_num_creating() > 0:
                 return False
@@ -2882,7 +2853,6 @@ class CephManager:
         """
         out = self.raw_cluster_cmd('quorum_status')
         j = json.loads(out)
-        self.log('quorum_status is %s' % out)
         return j['quorum']
 
     def wait_for_mon_quorum_size(self, size, timeout=300):

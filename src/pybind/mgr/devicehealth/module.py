@@ -9,7 +9,6 @@ import operator
 import rados
 from threading import Event
 from datetime import datetime, timedelta, date, time
-from six import iteritems
 
 TIME_FORMAT = '%Y%m%d-%H%M%S'
 
@@ -145,6 +144,7 @@ class Module(MgrModule):
         # other
         self.run = True
         self.event = Event()
+        self.has_device_pool = False
 
     def is_valid_daemon_name(self, who):
         l = who.split('.')
@@ -221,6 +221,37 @@ class Module(MgrModule):
                     self.get_module_option(opt['name']))
             self.log.debug(' %s = %s', opt['name'], getattr(self, opt['name']))
 
+    def notify(self, notify_type, notify_id):
+       # create device_health_metrics pool if it doesn't exist
+       if notify_type == "osd_map" and self.enable_monitoring:
+            if not self.has_device_pool:
+                self.create_device_pool()
+                self.has_device_pool = True
+
+    def create_device_pool(self):
+        self.log.debug('create %s pool' % self.pool_name)
+        # create pool
+        result = CommandResult('')
+        self.send_command(result, 'mon', '', json.dumps({
+            'prefix': 'osd pool create',
+            'format': 'json',
+            'pool': self.pool_name,
+            'pg_num': 1,
+            'pg_num_min': 1,
+        }), '')
+        r, outb, outs = result.wait()
+        assert r == 0
+        # set pool application
+        result = CommandResult('')
+        self.send_command(result, 'mon', '', json.dumps({
+            'prefix': 'osd pool application enable',
+            'format': 'json',
+            'pool': self.pool_name,
+            'app': 'mgr_devicehealth',
+        }), '')
+        r, outb, outs = result.wait()
+        assert r == 0
+
     def serve(self):
         self.log.info("Starting")
         self.config_notify()
@@ -274,44 +305,23 @@ class Module(MgrModule):
         self.event.set()
 
     def open_connection(self, create_if_missing=True):
-        pools = self.rados.list_pools()
-        is_pool = False
-        for pool in pools:
-            if pool == self.pool_name:
-                is_pool = True
-                break
-        if not is_pool:
+        osdmap = self.get("osd_map")
+        assert osdmap is not None
+        if len(osdmap['osds']) == 0:
+            return None
+        if not self.has_device_pool:
             if not create_if_missing:
                 return None
-            self.log.debug('create %s pool' % self.pool_name)
-            # create pool
-            result = CommandResult('')
-            self.send_command(result, 'mon', '', json.dumps({
-                'prefix': 'osd pool create',
-                'format': 'json',
-                'pool': self.pool_name,
-                'pg_num': 1,
-                'pg_num_min': 1,
-            }), '')
-            r, outb, outs = result.wait()
-            assert r == 0
-
-            # set pool application
-            result = CommandResult('')
-            self.send_command(result, 'mon', '', json.dumps({
-                'prefix': 'osd pool application enable',
-                'format': 'json',
-                'pool': self.pool_name,
-                'app': 'mgr_devicehealth',
-            }), '')
-            r, outb, outs = result.wait()
-            assert r == 0
-
+            if self.enable_monitoring:
+                self.create_device_pool()
+                self.has_device_pool = True
         ioctx = self.rados.open_ioctx(self.pool_name)
         return ioctx
 
     def scrape_daemon(self, daemon_type, daemon_id):
         ioctx = self.open_connection()
+        if not ioctx:
+            return 0, "", ""
         raw_smart_data = self.do_scrape_daemon(daemon_type, daemon_id)
         if raw_smart_data:
             for device, raw_data in raw_smart_data.items():
@@ -325,6 +335,8 @@ class Module(MgrModule):
         osdmap = self.get("osd_map")
         assert osdmap is not None
         ioctx = self.open_connection()
+        if not ioctx:
+            return 0, "", ""
         did_device = {}
         ids = []
         for osd in osdmap['osds']:
@@ -357,6 +369,8 @@ class Module(MgrModule):
                     'device ' + devid + ' not claimed by any active daemons')
         (daemon_type, daemon_id) = daemons[0].split('.')
         ioctx = self.open_connection()
+        if not ioctx:
+            return 0, "", ""
         raw_smart_data = self.do_scrape_daemon(daemon_type, daemon_id,
                                                devid=devid)
         if raw_smart_data:
@@ -559,7 +573,7 @@ class Module(MgrModule):
                 did += 1
             if to_mark_out:
                 self.mark_out_etc(to_mark_out)
-        for warning, ls in iteritems(health_warnings):
+        for warning, ls in health_warnings.items():
             n = len(ls)
             if n:
                 checks[warning] = {
@@ -616,9 +630,7 @@ class Module(MgrModule):
     def predict_lift_expectancy(self, devid):
         plugin_name = ''
         model = self.get_ceph_option('device_failure_prediction_mode')
-        if model and model.lower() == 'cloud':
-            plugin_name = 'diskprediction_cloud'
-        elif model and model.lower() == 'local':
+        if model and model.lower() == 'local':
             plugin_name = 'diskprediction_local'
         else:
             return -1, '', 'unable to enable any disk prediction model[local/cloud]'
@@ -632,9 +644,7 @@ class Module(MgrModule):
     def predict_all_devices(self):
         plugin_name = ''
         model = self.get_ceph_option('device_failure_prediction_mode')
-        if model and model.lower() == 'cloud':
-            plugin_name = 'diskprediction_cloud'
-        elif model and model.lower() == 'local':
+        if model and model.lower() == 'local':
             plugin_name = 'diskprediction_local'
         else:
             return -1, '', 'unable to enable any disk prediction model[local/cloud]'

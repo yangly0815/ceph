@@ -811,7 +811,7 @@ struct ObjectOperation {
 	      clone.cloneid = std::move(c.cloneid);
 	      clone.snaps.reserve(c.snaps.size());
 	      std::move(c.snaps.begin(), c.snaps.end(),
-			clone.snaps.end());
+			std::back_inserter(clone.snaps));
 	      clone.overlap = c.overlap;
 	      clone.size = c.size;
 	      neosnaps->clones.push_back(std::move(clone));
@@ -1557,6 +1557,10 @@ struct ObjectOperation {
     add_op(CEPH_OSD_OP_TIER_FLUSH);
   }
 
+  void tier_evict() {
+    add_op(CEPH_OSD_OP_TIER_EVICT);
+  }
+
   void set_alloc_hint(uint64_t expected_object_size,
                       uint64_t expected_write_size,
 		      uint32_t flags) {
@@ -1651,10 +1655,10 @@ private:
   bool honor_pool_full = true;
   bool pool_full_try = false;
 
-  // If this is true, accumulate a set of blacklisted entities
-  // to be drained by consume_blacklist_events.
-  bool blacklist_events_enabled = false;
-  std::set<entity_addr_t> blacklist_events;
+  // If this is true, accumulate a set of blocklisted entities
+  // to be drained by consume_blocklist_events.
+  bool blocklist_events_enabled = false;
+  std::set<entity_addr_t> blocklist_events;
   struct pg_mapping_t {
     epoch_t epoch = 0;
     std::vector<int> up;
@@ -1716,7 +1720,7 @@ private:
 public:
   void maybe_request_map();
 
-  void enable_blacklist_events();
+  void enable_blocklist_events();
 private:
 
   void _maybe_request_map();
@@ -1778,6 +1782,10 @@ public:
     int min_size = -1; ///< the min size of the pool when were were last mapped
     bool sort_bitwise = false; ///< whether the hobject_t sort order is bitwise
     bool recovery_deletes = false; ///< whether the deletes are performed during recovery instead of peering
+    uint32_t peering_crush_bucket_count = 0;
+    uint32_t peering_crush_bucket_target = 0;
+    uint32_t peering_crush_bucket_barrier = 0;
+    int32_t peering_crush_mandatory_member = CRUSH_ITEM_NONE;
 
     bool used_replica = false;
     bool paused = false;
@@ -2567,9 +2575,7 @@ private:
 			     cct->_conf->objecter_inflight_ops)};
  public:
   Objecter(CephContext *cct, Messenger *m, MonClient *mc,
-	   boost::asio::io_context& service,
-	   double mon_timeout,
-	   double osd_timeout);
+	   boost::asio::io_context& service);
   ~Objecter() override;
 
   void init();
@@ -2675,15 +2681,15 @@ private:
 
 
   /**
-   * Get std::list of entities blacklisted since this was last called,
+   * Get std::list of entities blocklisted since this was last called,
    * and reset the std::list.
    *
    * Uses a std::set because typical use case is to compare some
-   * other std::list of clients to see which overlap with the blacklisted
+   * other std::list of clients to see which overlap with the blocklisted
    * addrs.
    *
    */
-  void consume_blacklist_events(std::set<entity_addr_t> *events);
+  void consume_blocklist_events(std::set<entity_addr_t> *events);
 
   int pool_snap_by_name(int64_t poolid,
 			const char *snap_name,
@@ -2693,8 +2699,8 @@ private:
   int pool_snap_list(int64_t poolid, std::vector<uint64_t> *snaps);
 private:
 
-  void emit_blacklist_events(const OSDMap::Incremental &inc);
-  void emit_blacklist_events(const OSDMap &old_osd_map,
+  void emit_blocklist_events(const OSDMap::Incremental &inc);
+  void emit_blocklist_events(const OSDMap &old_osd_map,
                              const OSDMap &new_osd_map);
 
   // low-level
@@ -2931,10 +2937,11 @@ public:
 	      ObjectOperation&& op, const SnapContext& snapc,
 	      ceph::real_time mtime, int flags,
 	      std::unique_ptr<Op::OpComp>&& oncommit,
-	      version_t *objver = NULL, osd_reqid_t reqid = osd_reqid_t()) {
+	      version_t *objver = NULL, osd_reqid_t reqid = osd_reqid_t(),
+	      ZTracer::Trace *parent_trace = nullptr) {
     Op *o = new Op(oid, oloc, std::move(op.ops), flags | global_op_flags |
 		   CEPH_OSD_FLAG_WRITE, std::move(oncommit), objver,
-		   nullptr);
+		   nullptr, parent_trace);
     o->priority = op.priority;
     o->mtime = mtime;
     o->snapc = snapc;
@@ -2990,10 +2997,10 @@ public:
 	    ObjectOperation&& op, snapid_t snapid, ceph::buffer::list *pbl,
 	    int flags, std::unique_ptr<Op::OpComp>&& onack,
 	    version_t *objver = nullptr, int *data_offset = nullptr,
-	    uint64_t features = 0) {
+	    uint64_t features = 0, ZTracer::Trace *parent_trace = nullptr) {
     Op *o = new Op(oid, oloc, std::move(op.ops), flags | global_op_flags |
 		   CEPH_OSD_FLAG_READ, std::move(onack), objver,
-		   data_offset);
+		   data_offset, parent_trace);
     o->priority = op.priority;
     o->snapid = snapid;
     o->outbl = pbl;
@@ -3887,7 +3894,7 @@ public:
   void ms_handle_remote_reset(Connection *con) override;
   bool ms_handle_refused(Connection *con) override;
 
-  void blacklist_self(bool set);
+  void blocklist_self(bool set);
 
 private:
   epoch_t epoch_barrier = 0;
